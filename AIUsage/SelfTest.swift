@@ -784,7 +784,20 @@ enum SelfTest {
 
         // 分档：下拉里给谁打勾全靠这一条
         equal("关闭档的文字", RefreshInterval.label(RefreshInterval.off), "关闭")
-        equal("分钟档的文字", RefreshInterval.label(10), "每 10 分钟")
+        equal("分钟档的文字", RefreshInterval.label(10), "10 分钟")
+        // 不带「每」是有意的：按钮上那一格定宽，而「每 30 分钟」比「30 分钟」宽 15.2pt，
+        // 主窗口工具组掏不出这 15pt（见 RefreshIntervalControl.labelWidth 那段账）
+        expect("档位文字里不许把「每」加回来", !RefreshInterval.label(30).contains("每"),
+               "加了「每」就等于把按钮那格定宽撑破，日期会被挤去换行")
+        equal("最长的一档是四位数", RefreshInterval.label(RefreshInterval.validRange.upperBound), "1440 分钟")
+        // 定宽常量够不够，是量出来的，不是估的：把 0…1440 全量一遍去撞它。
+        // 改字号 / 改文案 / 把上限调大，这一条会先红。
+        let need = RefreshIntervalControl.measuredLabelWidth(compact: false)
+        let needCompact = RefreshIntervalControl.measuredLabelWidth(compact: true)
+        expect("主窗口那格的定宽放得下最宽的一档", need <= RefreshIntervalControl.labelWidth,
+               String(format: "最宽要 %.2fpt，定宽 %0.2fpt", need, RefreshIntervalControl.labelWidth))
+        expect("面板那格的定宽放得下最宽的一档", needCompact <= RefreshIntervalControl.compactLabelWidth,
+               String(format: "最宽要 %.2fpt，定宽 %0.2fpt", needCompact, RefreshIntervalControl.compactLabelWidth))
         expect("预设不算自定义", !RefreshInterval.isCustom(30))
         expect("关闭不算自定义", !RefreshInterval.isCustom(RefreshInterval.off))
         expect("7 分钟算自定义", RefreshInterval.isCustom(7))

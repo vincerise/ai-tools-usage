@@ -47,9 +47,13 @@ enum RefreshInterval {
         return min(raw, validRange.upperBound)
     }
 
-    /// 下拉按钮与菜单项共用的那行文字
+    /// 下拉按钮、菜单项、自测共用的那行文字。
+    ///
+    /// **不带「每」**：「每 30 分钟」比「30 分钟」宽 15.2pt（实测），而按钮上那一格是定宽的
+    /// （见 `RefreshIntervalControl.labelWidth`），一个字都要算——主窗口工具组离最小窗口宽度
+    /// 只剩十几 pt。菜单里不带「每」也不会读错：菜单第一行是禁用的标题「定时刷新」。
     static func label(_ minutes: Int) -> String {
-        minutes == off ? "关闭" : "每 \(minutes) 分钟"
+        minutes == off ? "关闭" : "\(minutes) 分钟"
     }
 
     /// 当前值来自「自定义」那一档（既不是关闭，也不落在预设上）
