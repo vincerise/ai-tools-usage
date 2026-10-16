@@ -70,6 +70,7 @@ enum SelfTest {
         testMenuBarLabel()
         testWindowLifecycle()
         testUpdateLogic()
+        testLaunchAtLogin()
         print("\n" + String(repeating: "─", count: 46))
         if failures.isEmpty {
             print("自测通过：\(passes) 项断言全部成立")
@@ -1052,6 +1053,92 @@ enum SelfTest {
 
     /// 64 位 hex，取值照线上 v0.1.0 那份 release 正文（真实存在，不是编的）。
     private static let sampleDigest = "713a34396f6725f22ad85db7beafc9175101b7820f109f4ec4f91a163818b3ab"
+
+    // MARK: 11. 登录时启动
+
+    /// 「登录时自动启动」的状态机。**这个组一个真系统调用都不发**：注册登录项是在用户的机器上
+    /// 留东西（而且是留在他系统设置的「登录项」里），跑一次自测留一个，还不能像临时目录那样自删。
+    /// 所以这里全程拿 `FakeLoginItem` —— `LaunchAtLoginSettings` 的 service 是可注入的，
+    /// 正是为了这一组（`LaunchAtLogin.Service` 那段注释里也是这个理由）。
+    /// **绝不要为了「更真实」在这里建 `LaunchAtLogin.SystemService()`。**
+    private static func testLaunchAtLogin() {
+        group("11. 登录时启动")
+
+        // 系统那四种状态怎么翻成界面上的三种（`.notFound` 与 `.notRegistered` 归到同一个「关」）
+        equal("已登记 → 开", LaunchAtLogin.state(of: .enabled), .on)
+        equal("没登记 → 关", LaunchAtLogin.state(of: .notRegistered), .off)
+        equal("等批准 → 等批准", LaunchAtLogin.state(of: .requiresApproval), .needsApproval)
+        // 这一条是**量出来的**：没登记过的 App，系统给的就是 `.notFound`，而 register() 照样成功。
+        // 它要是被翻成「用不了」，所有还没开过这一项的人看到的都是一个灰开关 —— 功能等于没有。
+        equal("**系统里还没有这条记录 → 关（不是「用不了」）**", LaunchAtLogin.state(of: .notFound), .off)
+
+        // 拨开关：真的去调系统，调完回头问状态，而不是自己记一个 bool
+        let fake = FakeLoginItem()
+        let settings = LaunchAtLoginSettings(service: fake)
+        expect("刚建出来跟着系统走", settings.state == .off && !settings.isOn)
+        settings.setEnabled(true)
+        equal("打开 → 登记了一次", fake.registerCalls, 1)
+        equal("打开后状态回头问系统", settings.state, .on)
+        expect("打开后开关是开的", settings.isOn)
+        settings.setEnabled(false)
+        equal("关掉 → 注销了一次", fake.unregisterCalls, 1)
+        expect("关掉后开关是关的", !settings.isOn)
+        expect("这一步没有报错", settings.errorMessage == nil)
+
+        // 「等批准」算开：登记是登记上了的。画成关着的话，用户会以为刚才那下没生效、
+        // 再点一次 —— 而那一次是注销，正好把想开的这项关掉。
+        let pending = LaunchAtLoginSettings(service: FakeLoginItem(state: .needsApproval))
+        expect("**等批准时开关算开**（不然用户再点一次就变成注销了）", pending.isOn)
+        equal("但状态要单独说得出「还差个批准」", pending.state, .needsApproval)
+
+        // 系统没接受：状态不许跟着动，只留一句话
+        let failing = FakeLoginItem()
+        failing.failure = FakeError()
+        let failingSettings = LaunchAtLoginSettings(service: failing)
+        failingSettings.setEnabled(true)
+        expect("系统拒绝时开关不许自己变成开", !failingSettings.isOn)
+        expect("系统拒绝要留下一句话", failingSettings.errorMessage?.isEmpty == false)
+        expect("那句话里带上系统的原话", failingSettings.errorMessage?.contains("假装的失败") == true)
+        failing.failure = nil
+        failingSettings.setEnabled(false)
+        expect("下一次成功了要把上一次的错清掉", failingSettings.errorMessage == nil)
+
+        // 演示模式那份实现：只动内存
+        let demo = LaunchAtLogin.DemoService()
+        equal("演示模式默认报「没开」", demo.state, .off)
+        demo.register()
+        equal("演示模式点一下也能显示成开（只动内存，不碰系统）", demo.state, .on)
+        demo.unregister()
+        equal("再点一下回到关", demo.state, .off)
+    }
+
+    /// 假系统。只记账，一个真登录项都不会被注册。
+    @MainActor
+    private final class FakeLoginItem: LaunchAtLogin.Service {
+        var state: LaunchAtLogin.State
+        var registerCalls = 0
+        var unregisterCalls = 0
+        /// 设上就让两个动作都抛错，用来验「系统没接受」那条路
+        var failure: Error?
+
+        init(state: LaunchAtLogin.State = .off) { self.state = state }
+
+        func register() throws {
+            registerCalls += 1
+            if let failure { throw failure }
+            state = .on
+        }
+
+        func unregister() throws {
+            unregisterCalls += 1
+            if let failure { throw failure }
+            state = .off
+        }
+    }
+
+    private struct FakeError: LocalizedError {
+        var errorDescription: String? { "假装的失败" }
+    }
 
     private static func tempDir(_ tag: String) -> URL {
         let dir = FileManager.default.temporaryDirectory

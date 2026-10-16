@@ -40,6 +40,7 @@ This app gathers those scattered logs into one ledger and solves three things:
 | **Multi-device sync** | Exchanges daily aggregate archives through iCloud Drive — no server involved |
 | **Export** | Current filtered result to CSV / TSV / JSON, with full methodological metadata |
 | **Scheduled refresh** | Rescans local sessions automatically: every 5 / 10 / 30 / 60 minutes, a custom interval, or off; 30 minutes by default |
+| **Launch at login** | One switch in Settings, using the system's own login items (`SMAppService`) — no LaunchAgent, no plist |
 | **Retention report** | Per environment: how many days of local logs are left vs. how many the archive holds |
 | **Automatic updates** | Checks GitHub Releases from Settings and downloads, verifies, swaps and relaunches in-app; no third-party update framework |
 
@@ -107,7 +108,7 @@ as `Unpriced` rather than `$0.00`.
 
 **Engineering.** Parse results are cached by `(path, size, mtime)` so a refresh re-parses only changed files;
 every number in the UI has a machine-readable outlet (`--dump` / `--menu` / `--retention` / `--export`), the
-layout has a set of offscreen snapshots (`--render`), and the accounting has 256 assertions (`--selftest`).
+layout has a set of offscreen snapshots (`--render`), and the accounting has 280 assertions (`--selftest`).
 
 ## Privacy
 
@@ -246,6 +247,26 @@ wrongly conclude it may drop to menu-bar-only. Reopening the app from Applicatio
 have no entry point at all, so that combination deliberately does **not** drop to menu-bar-only — the Dock icon
 stays, and Settings shows an orange warning to that effect.
 
+### Launch at login
+
+Settings → Display & Retention → **Launch** has a switch that means "open this automatically after you log in to this Mac".
+
+It uses the system's own login items (`SMAppService.mainApp`) — **no LaunchAgent is installed and no plist is written
+to `~/Library/LaunchAgents`**: turning it off unregisters the item, which also stays visible in System Settings and can
+be turned off there at any time. **This setting stores nothing of its own** — the truth lives on the system side (the
+user can switch it off in System Settings directly), and a second copy of it here would be a second source of truth
+that eventually disagrees; so the UI re-reads the system state instead of guessing from "I just called register".
+When the item is registered but still waiting for the user to click "Allow" (`requiresApproval`), the switch still
+reads as on and a separate line says what is missing — drawing it as off would make the user think the click didn't
+take and click again, which would *unregister* it.
+
+If the system refuses the change, the switch does not move and a red line appears below with the system's own words
+(plus a hint to move the app into Applications — nearly every failure on this path is of that kind). Nothing pretends
+to have succeeded.
+
+Note that this app **opens its main window at launch** (it is not a menu-bar-only app — see the section above), so
+this option means "opens as usual after login"; there is no "silent, icon only" variant.
+
 ## Pricing
 
 At launch the app fetches unit prices from [LiteLLM](https://github.com/BerriAI/litellm) and caches them under `~/Library/Application Support/AIUsage/` (not refetched within 6 hours). Unmatched models show `Unpriced`; you can price them by hand under Settings → **Model prices** ($ per 1M tokens). Manual prices win.
@@ -303,7 +324,7 @@ APP="build/Build/Products/Release/AI Usage.app/Contents/MacOS/AI Usage"
 | `--dump [days]` | Prints the summary, 90 days by default. **Pass a bare integer**: `--dump 7`. `--dump "7 days"` doesn't error but **silently does nothing** — it parses with `Int($0)` and falls back to 90 days when that fails |
 | `--menu` | Menu bar summary (fixed windows: today / this month / last 7 days), plus a final `label:` line — the string actually shown in the menu bar, assembled from your configuration. Matching numbers don't mean the string is right: defects like `今日 $ $16.86` are only visible once the assembled string is printed |
 | `--retention` | Retention table. Prints the `cleanupPeriodDays` value **only** and touches nothing else in `~/.claude/settings.json` |
-| `--selftest` | 256 assertions; non-zero exit on failure |
+| `--selftest` | 280 assertions; non-zero exit on failure |
 | `--render <dir>` | Offscreen snapshots (views backed by AppKit — `TextEditor`, `Form`, `Menu` — go through a real `NSWindow`, see `RenderHarness.captureWindow`; views whose height follows their content measure themselves, see `captureFitting`) |
 | `--bench` | Median rasterization time for the main window |
 | `--export <dir> [csv\|tsv\|json] [device\|model\|day]` | Export in three formats per breakdown, byte-for-byte checkable |
@@ -327,6 +348,7 @@ Parse results are cached by file `(path, size, mtime)` in `~/Library/Application
 AIUsage/
 ├── App.swift                  App entry, the three scenes, offscreen render harness (--render / --bench)
 ├── SelfTest.swift             Every --selftest assertion
+├── App/                       Activation policy, window lifecycle, ⌘Q, launch at login
 ├── Demo/                      Synthetic data and the demo-mode switch behind --demo
 ├── Providers/                 Per-source parsers, scan cache, SQLite reader
 ├── Store/UsageStore.swift     The single source of truth for aggregation, filtering, sorting

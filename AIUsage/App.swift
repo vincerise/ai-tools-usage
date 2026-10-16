@@ -16,6 +16,9 @@ struct AIUsageApp: App {
     @StateObject private var update: UpdateService
     /// 更新配置。**与 `update` 共用同一个实例**，单独注入是为了让「关于」页能绑它的开关。
     @StateObject private var updateSettings: UpdateSettings
+    /// 登录时启动。演示模式下它拿的是只动内存的实现（见 `LaunchAtLogin`），
+    /// 所以出图不会在作者机器上留下一个真登录项。
+    @StateObject private var launchAtLogin = LaunchAtLoginSettings()
 
     init() {
         // 第一件事：`--demo` 的退出清理挂上去。必须早于下面任何一处会读配置域的地方 ——
@@ -145,6 +148,7 @@ struct AIUsageApp: App {
                 .environmentObject(behavior)
                 .environmentObject(update)
                 .environmentObject(updateSettings)
+                .environmentObject(launchAtLogin)
         }
     }
 }
@@ -223,6 +227,10 @@ enum RenderHarness {
         // 设置页要读关窗行为那个开关，缺了它会直接崩（`@EnvironmentObject` 取不到就 fatalError）。
         // 同样只能用默认值：这个对象也是 `didSet` 就写 UserDefaults。
         let behavior = AppBehaviorSettings()
+        // 登录时启动那一项：**显式给演示实现**，不走 `LaunchAtLoginSettings()` 的默认推断。
+        // 出图的进程是从 build 目录跑的，真去问系统只会得到「系统不认这个 App」，
+        // 那一页就会挂着一句不可用的说明 —— 看着像功能坏了。
+        let launchAtLogin = LaunchAtLoginSettings(service: LaunchAtLogin.DemoService())
         // 设置页现在多了「关于」一页，它读 `UpdateService` 与 `UpdateSettings`；
         // 缺任何一个同样是 fatalError，整个出图当场死。
         // 演示模式下 `UpdateService` 构造出来就带着那条编好的更新（见它的 init），
@@ -263,7 +271,8 @@ enum RenderHarness {
             for pane in SettingsPane.allCases {
                 await captureWindow(settingsShot(pane: pane, retention: retention, store: store, pricing: pricing,
                                                  menuBar: menuBar, behavior: behavior,
-                                                 update: update, updateSettings: updateSettings, scheme: scheme),
+                                                 update: update, updateSettings: updateSettings,
+                                                 launchAtLogin: launchAtLogin, scheme: scheme),
                                     size: SettingsView.size, to: "\(dir)/settings-\(pane.rawValue)-\(name).png")
             }
             // 菜单栏那张富面板本身是普通视图，直接渲染就能核对排版。
@@ -336,6 +345,7 @@ enum RenderHarness {
                                      store: UsageStore, pricing: PricingService,
                                      menuBar: MenuBarSettings, behavior: AppBehaviorSettings,
                                      update: UpdateService, updateSettings: UpdateSettings,
+                                     launchAtLogin: LaunchAtLoginSettings,
                                      scheme: ColorScheme) -> some View {
         SettingsView(injectedRetention: retention, initialPane: pane)
             .environmentObject(store)
@@ -344,6 +354,7 @@ enum RenderHarness {
             .environmentObject(behavior)
             .environmentObject(update)
             .environmentObject(updateSettings)
+            .environmentObject(launchAtLogin)
             .environment(\.colorScheme, scheme)
     }
 

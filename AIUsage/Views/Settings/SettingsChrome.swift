@@ -27,7 +27,7 @@ enum SettingsPane: String, CaseIterable, Identifiable, Hashable {
         case .sources: return "每个工具扫哪里，能拿到什么口径"
         case .devices: return "本机身份与 iCloud 档案目录"
         case .pricing: return "LiteLLM 价格表与手动覆盖"
-        case .display: return "菜单栏显示什么，本地日志留多久"
+        case .display: return "菜单栏显示什么，本地日志留多久，以及启动与关窗行为"
         case .about: return "版本、更新与仓库"
         }
     }

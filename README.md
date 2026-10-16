@@ -43,6 +43,7 @@ Claude Code 默认保留 30 天本地日志，过了就没了。
 | **多设备同步** | 通过 iCloud Drive 交换每日汇总档案，不依赖任何服务器 |
 | **导出** | 当前筛选结果导出 CSV / TSV / JSON，带完整口径元信息 |
 | **定时刷新** | 自动重扫本地会话：5 / 10 / 30 / 60 分钟、自定义分钟，或关掉；默认 30 分钟 |
+| **开机自动启动** | 设置里一个开关，走系统自己的登录项（`SMAppService`），不装 LaunchAgent、不落 plist |
 | **留存对照** | 按环境列出「本机日志还剩多少天 / 档案有多少天 / 只在档案里多少天」 |
 | **自动更新** | 设置里检查 GitHub Releases，应用内下载、校验、替换并重启；不引入任何第三方更新框架 |
 
@@ -107,7 +108,7 @@ processed = uncached input + cache read + cache write + output
 
 **工程。** 解析结果按 `(path, size, mtime)` 缓存，刷新只重解析变过的文件；
 界面上的每个数都有一个机器可读的出口（`--dump` / `--menu` / `--retention` / `--export`），
-排版有一组离屏快照核对（`--render`），口径有一份 256 条断言的自测（`--selftest`）。
+排版有一组离屏快照核对（`--render`），口径有一份 280 条断言的自测（`--selftest`）。
 
 ## 隐私
 
@@ -241,6 +242,23 @@ prerelease 上时它会直接 404。
 另外，如果同时关掉菜单栏图标、又保留「关窗不退出」，App 会变成没有任何入口 —— 这一格刻意不让它退成纯状态栏，
 Dock 图标会保留，设置页里也有对应的橙色提示。
 
+### 登录时启动
+
+设置 → 显示与留存 → **启动** 里有一个开关，打开就是「登录这台 Mac 之后自动把它打开」。
+
+走的是系统自己的登录项（`SMAppService.mainApp`），**不装 LaunchAgent、不往 `~/Library/LaunchAgents` 落 plist**：
+关掉就是在系统里注销掉，项也看得见、随时能自己关。**这一项不落自己的盘** —— 真相在系统那一侧
+（用户可以直接在系统设置里关掉它），自己再存一个 bool 就有了两个真相来源，迟早对不上；
+所以界面刷新时是回头问系统要状态，而不是照着「我刚才发过 register」猜。系统那边登记上了、
+但还差用户点一下「允许」时（`requiresApproval`），开关照旧画成开着的，另用一行字说明白差什么 ——
+把它画成关着的话，用户会以为刚才那下没生效、然后再点一次，而那一次是注销。
+
+系统没接受这次改动时开关不动、下面多一行红字（带上系统原话，并提示「把 App 拖进应用程序再试」——
+这条路上真出过的错几乎都是这一类），不假装成功。
+
+注意本 App **启动就有主窗口**（它不是一个纯状态栏 App，理由见上一节），所以这一档就是
+「登录后像平时一样打开」，没有「静默只留图标」那种。
+
 ## 价格
 
 启动时从 [LiteLLM](https://github.com/BerriAI/litellm) 拉取单价并缓存到 `~/Library/Application Support/AIUsage/`
@@ -305,7 +323,7 @@ APP="build/Build/Products/Release/AI Usage.app/Contents/MacOS/AI Usage"
 | `--dump [天数]` | 打印汇总，默认 90 天。**天数写裸整数**：`--dump 7`。写成 `--dump "7 days"` 不报错但**不生效** —— 解析用的是 `Int($0)`，解析不出来就一声不响地退回 90 天 |
 | `--menu` | 菜单栏摘要（固定窗口：今日 / 本月 / 近 7 天），末尾另打一行 `label:` —— 那是菜单栏上**真正显示的那行字**（由你的配置拼出来）。数字对得上不等于那行字对：「今日 $ $16.86」这种拼写毛病只有把拼好的串打出来才看得见 |
 | `--retention` | 留存对照表。只打印 `cleanupPeriodDays` 这**一个**值，不碰 `~/.claude/settings.json` 里的其它内容 |
-| `--selftest` | 256 条断言，失败退出码非 0 |
+| `--selftest` | 280 条断言，失败退出码非 0 |
 | `--render <目录>` | 离屏快照（`TextEditor` / `Form` / `Menu` 这类 AppKit 承载的视图走真实 `NSWindow` 抓图，见 `RenderHarness.captureWindow`；高度由内容决定的视图自己量，见 `captureFitting`） |
 | `--bench` | 主界面光栅化耗时中位数 |
 | `--export <目录> [csv\|tsv\|json] [device\|model\|day]` | 按维度导出三种格式，逐字节可核对 |
@@ -328,6 +346,7 @@ APP="build/Build/Products/Release/AI Usage.app/Contents/MacOS/AI Usage"
 AIUsage/
 ├── App.swift                  App 入口、三个 scene、离屏渲染工装（--render / --bench）
 ├── SelfTest.swift             --selftest 的全部断言
+├── App/                       激活策略、关窗行为、⌘Q、登录时启动
 ├── Demo/                      --demo 的合成数据与演示模式开关
 ├── Providers/                 各数据源的解析器 + 扫描缓存 + SQLite 读取
 ├── Store/UsageStore.swift     聚合、筛选、排序的唯一真相

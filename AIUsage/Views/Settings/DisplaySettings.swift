@@ -16,6 +16,8 @@ struct DisplaySettings: View {
     /// 关窗行为。它归在「菜单栏」这一节里，因为两者是耦合的：菜单栏图标是关掉主窗口之后
     /// **唯一的入口**，所以图标关掉时那条「退成纯状态栏」的路必须让开（见下面那行橙色提示）。
     @EnvironmentObject var behavior: AppBehaviorSettings
+    /// 登录时启动。它跟关窗行为是同一类东西（App 什么时候活着），所以也放在这一页。
+    @EnvironmentObject var launchAtLogin: LaunchAtLoginSettings
 
     /// 工装注入用。离屏快照工装**不跑 `.task`**，不注入的话这一页只能拍到
     /// 「正在统计…」那个占位，排版就没法核对了。
@@ -32,10 +34,16 @@ struct DisplaySettings: View {
                 retentionCard
                 coverageCard
                 menuBarCard
+                launchCard
             }
         }
         // 跟着 `lastScan` 重算：用户可能在别的页签点了「立即重扫」，或者主窗口刚扫完
         .task(id: store.lastScan) { await reload() }
+        // 回到前台时重问一遍系统：用户很可能刚去系统设置里批准（或关掉）了这个登录项，
+        // 而那一侧的变化不会通知我们
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            launchAtLogin.refresh()
+        }
     }
 
     // MARK: 留存
@@ -236,7 +244,58 @@ struct DisplaySettings: View {
         }
     }
 
+    // MARK: 启动
+
+    /// 登录时启动。放在这一页，是因为「App 什么时候活着」这一页本来就管了一半
+    /// （关窗行为就在上面那张卡里）；它跟菜单栏图标也是一套的：登录就起，图标才一直在。
+    ///
+    /// **开关绑的不是一个 `@State` bool，而是系统的状态**（`launchAtLogin.isOn` 从
+    /// `SMAppService` 的状态推出来）：用户能在系统设置里直接关掉这一项，界面得跟着走。
+    /// 拨一下失败（系统没接受）时状态不变、下面多一行红字，不假装成功。
+    private var launchCard: some View {
+        SettingsCard("启动",
+                     footer: "走系统自己的登录项（`SMAppService`），不装 LaunchAgent、不往 `~/Library/LaunchAgents` 落 plist —— 关掉就是在系统里注销掉，系统设置 → 通用 → 登录项里也看得见、随时能自己关。\n\n注意本 App **启动就有主窗口**（它不是一个纯状态栏 App，理由见 `ActivationPolicyController`），所以「登录时启动」= 登录后像平时一样打开，没有「静默只留图标」那一档。") {
+            SettingsRow("登录时启动",
+                        note: "登录这台 Mac 之后自动把它打开。它管的是「登录时起不起」，跟上面那条「关掉主窗口之后留不留」是两件事。") {
+                Toggle("登录后自动打开", isOn: Binding(
+                    get: { launchAtLogin.isOn },
+                    set: { launchAtLogin.setEnabled($0) }
+                ))
+                .toggleStyle(.switch).controlSize(.small)
+            }
+            launchStatus
+        }
+    }
+
+    @ViewBuilder
+    private var launchStatus: some View {
+        // 开关永远是能点的：`.notFound` 是「系统那边还没有这条记录」，不是「用不了」——
+        // 实测没登记过的 App 给的就是它，而 register() 一把就成（账记在 `LaunchAtLogin.state(of:)`）。
+        // 真不行的那次会由 `register()` 抛错，下面那行红字把系统的原话摆出来。
+        if launchAtLogin.state == .needsApproval {
+            // 登记上了、系统还没放行：这不是失败，是差用户去点一下「允许」
+            HStack(spacing: 8) {
+                Label("已经登记，系统在等你批准这个登录项。",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 11)).foregroundStyle(Theme.statusWarning)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("打开登录项设置") { openLoginItems() }.settingsButton()
+                Spacer(minLength: 0)
+            }
+        }
+        if let message = launchAtLogin.errorMessage {
+            SettingsNote(message, error: true)
+        }
+    }
+
     // MARK: 动作
+
+    private func openLoginItems() {
+        // 系统设置 → 通用 → 登录项。这个 URL 是那个设置扩展的 id（macOS 13 起）
+        if let url = URL(string: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension") {
+            NSWorkspace.shared.open(url)
+        }
+    }
 
     private func reload() async {
         let records = store.records
