@@ -3,7 +3,7 @@ import AppKit
 
 /// 「显示与留存」页。
 ///
-/// 两件事：菜单栏怎么显示自己，以及**本地日志正在被删这件事**。
+/// 三件事：项目按什么口径归组、菜单栏怎么显示自己，以及**本地日志正在被删这件事**。
 /// 后者是 App 里唯一一处「数据在流失」的说明 —— 不说，用户不会知道 Claude Code
 /// 默认只留 30 天，更不知道该去改哪个值；而档案早就越过了那把砍刀，界面却一个字不提。
 ///
@@ -25,6 +25,7 @@ struct DisplaySettings: View {
 
     @State private var loaded: RetentionReport?
     @State private var copied = false
+    @State private var showMergeSheet = false
 
     private var report: RetentionReport? { injectedReport ?? loaded }
 
@@ -33,6 +34,8 @@ struct DisplaySettings: View {
             SettingsScroll {
                 retentionCard
                 coverageCard
+                projectCard
+                aliasesCard
                 menuBarCard
                 launchCard
             }
@@ -206,6 +209,78 @@ struct DisplaySettings: View {
         guard let f = s.first, let l = s.last else { return "—" }
         func md(_ k: String) -> String { k.count > 5 ? String(k.dropFirst(5)) : k }
         return f == l ? md(f) : "\(md(f)) .. \(md(l))"
+    }
+
+    // MARK: 项目分组
+
+    /// 项目口径是**展示端**的选择：档案里同时存着工作目录与 Git 根，
+    /// 拨这一下只重算内存里的聚合，不重扫任何日志（见 `AggregateRow` 与 `ProjectGrouping`）。
+    ///
+    /// footer 必须说清两件容易被误解的事：路径会进 iCloud 档案（只传路径、不传会话内容），
+    /// 以及跨设备同一仓库的绝对路径不同会被视为两个项目 —— 这里不读 `.git/config` 的 remote。
+    private var projectCard: some View {
+        SettingsCard("项目分组",
+                     footer: "项目路径会随每日聚合写进 iCloud 设备档案 —— **只写路径，不传会话内容**。同一仓库在两台设备上检出的绝对路径不同时，会被视为两个项目：这里不读 `.git/config` 的 remote，也不做路径映射。") {
+            SettingsRow("分组方式",
+                        note: "「Git 仓库根目录」把同一仓库的子目录合并成一个项目；「会话工作目录」按会话实际所在目录原样分组。没有工作目录的数据（Qoder、加密数据源、旧版本 App 写的设备档案）归入「未归类」，不猜、也不按 0 算。") {
+                SegmentedControl(options: ProjectGrouping.allCases.map { ($0, $0.label) },
+                                 selection: $store.projectGrouping,
+                                 itemWidth: 118, height: 28)
+            }
+        }
+    }
+
+    // MARK: 项目合并
+
+    /// 目录改名之后，旧路径不会自己跟到新路径上。这一张卡管那组显式映射：
+    /// 列出、撤销，并给出添加入口（看板 / 明细里右键是更快的入口）。
+    ///
+    /// footer 必须说清两件事：映射是在**分组之前**按路径前缀改写的，所以两种归组口径都受益；
+    /// 它只在本机生效、不随 iCloud 档案同步 —— 换一台机器要重新设。
+    private var aliasesCard: some View {
+        SettingsCard("项目合并",
+                     footer: "合并是在分组之前按路径前缀改写：默认的 Git 根口径下，旧仓库和它下面的子目录会一起并过去；会话目录口径按具体的 cwd 前缀对应。它只在本机生效（`projects.aliases.v1`），不随设备档案同步；原始日志和设备档案一个字节都不动。") {
+            if store.projectAliases.isEmpty {
+                SettingsNote("还没有手动合并的项目。目录改名后，在项目看板或「按项目」明细里右键旧项目，选「合并到另一个项目…」。")
+            } else {
+                ForEach(store.projectAliases) { alias in
+                    HStack(spacing: 8) {
+                        Text(aliasLabel(alias.from))
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(Theme.gray900)
+                            .lineLimit(1).truncationMode(.middle)
+                        Image(systemName: "arrow.right")
+                            .font(.system(size: 9))
+                            .foregroundStyle(Theme.gray500)
+                        Text(aliasLabel(alias.to))
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(Theme.gray900)
+                            .lineLimit(1).truncationMode(.middle)
+                        Spacer(minLength: 8)
+                        Button("移除") { store.removeProjectAlias(alias) }
+                            .settingsButton()
+                            .help("撤销这条合并，旧项目会重新独立成一行")
+                    }
+                    .help("\(ProjectResolver.displayPath(alias.from)) → \(ProjectResolver.displayPath(alias.to))")
+                }
+            }
+            HStack(spacing: 8) {
+                Button("添加合并…") { showMergeSheet = true }
+                    .settingsButton()
+                Spacer(minLength: 0)
+            }
+        }
+        .sheet(isPresented: $showMergeSheet) {
+            ProjectMergeSheet()
+                .environmentObject(store)
+        }
+    }
+
+    /// 合并项里的两端都按「本次范围内的消歧规则」显示：两个同名项目会写成 `a/foo`、`b/foo`，
+    /// 不会在这一行里又混回同一个短名。完整路径在 tooltip 里。
+    private func aliasLabel(_ path: String) -> String {
+        let labels = ProjectResolver.labels(for: store.projectAliases.flatMap { [$0.from, $0.to] })
+        return labels[path] ?? ProjectResolver.displayPath(path)
     }
 
     // MARK: 菜单栏

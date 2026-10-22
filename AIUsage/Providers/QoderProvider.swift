@@ -3,6 +3,10 @@ import Foundation
 /// Qoder IDE 把对话存在 `SharedClientCache/cache/db/local.db` 的 `chat_message` 表：
 /// role='assistant' 行带 `token_info` JSON（prompt_tokens / completion_tokens / cached_tokens，OpenAI 口径，prompt 含 cached）
 /// 与 `model_info` JSON（model_key，多为 auto / ultimate 等路由档，LiteLLM 无单价时显示未计价）。
+///
+/// **没有工作目录字段**（`chat_message` / `chat_record` 里都找不到可靠的路径），所以这些记录
+/// 的项目路径留空，在项目维度里归入「未归类」。不拿会话 id 或数据库路径去猜 ——
+/// 猜错的项目比「说不清是哪个项目」更糟。
 struct QoderProvider: UsageProvider {
     func scan(paths: [String]) -> [UsageRecord] {
         paths.flatMap(scanDatabase)

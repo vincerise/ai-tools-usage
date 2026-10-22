@@ -8,6 +8,9 @@ struct BreakdownTable: View {
     /// 详情浮层的选中模型。状态在窗口那一层，这里只负责写入 —— 原先 `.popover` 挂在每一行上，
     /// 锚点几乎和窗口一样宽、行又会被 LazyVStack 回收，位置会飘到窗口边上。
     @Environment(\.modelDetail) private var modelDetail
+    /// 右键「合并到另一个项目…」选中的来源；sheet 挂在这张表上，
+    /// 不挂在每一行（行会被 LazyVStack 回收，锚点会飘）。
+    @State private var mergeSource: BreakdownRow?
 
     private var rows: [BreakdownRow] { store.snapshot.rows(for: store.breakdown) }
 
@@ -26,7 +29,8 @@ struct BreakdownTable: View {
     /// 含未计价模型时金额是下界，必须在标题里说清楚，不能让读者把 ≥ 当成精确值
     private var subtitle: String {
         // 占比跟着排序口径走 —— 排的是费用就别在旁边读 token 占比（见 BreakdownSort.shareBasis）
-        let base = "共 \(rows.count) 条 · 占比按\(store.sort.shareBasis.shareLabel)计算"
+        let count = store.breakdown == .project ? "共 \(rows.count) 个项目" : "共 \(rows.count) 条"
+        let base = "\(count) · 占比按\(store.sort.shareBasis.shareLabel)计算"
         return rows.contains(where: \.unpriced) ? base + " · ≥ 含未计价模型" : base
     }
 
@@ -49,7 +53,8 @@ struct BreakdownTable: View {
                             share: store.snapshot.share(of: row, by: store.sort.shareBasis),
                             mode: store.breakdown,
                             isLocalDevice: store.breakdown == .device && row.deviceIds == [DeviceIdentity.id],
-                            onDetail: store.breakdown == .model ? { modelDetail.wrappedValue = row.id } : nil)
+                            onDetail: store.breakdown == .model ? { modelDetail.wrappedValue = row.id } : nil,
+                            onMerge: store.breakdown == .project && !row.id.isEmpty ? { mergeSource = row } : nil)
                     }
                 }
                 if shown.isEmpty {
@@ -58,6 +63,10 @@ struct BreakdownTable: View {
             }
         }
         .card()
+        .sheet(item: $mergeSource) { row in
+            ProjectMergeSheet(initialSource: row.id)
+                .environmentObject(store)
+        }
     }
 
     private var header: some View {
@@ -162,9 +171,20 @@ struct BreakdownTable: View {
         let isLocalDevice: Bool
         /// 只有「按模型」维度给得出详情，其余维度传 nil（按钮与双击都关掉）
         let onDetail: (() -> Void)?
+        /// 「按项目」维度下右键「合并到另一个项目…」；其余维度为 nil
+        let onMerge: (() -> Void)?
         @State private var hovering = false
         /// 标签宽度预算内能完整显示的环境个数
         private static let maxTags = 3
+
+        /// 只有项目维度的第一列需要补充说明；其余维度返回空串（`.help("")` 不弹提示）。
+        private var labelHelp: String {
+            guard mode == .project else { return "" }
+            if row.id.isEmpty {
+                return "未归类：这些数据源没有提供工作目录（Qoder、加密数据源，或旧版本 App 写的设备档案）"
+            }
+            return "路径：\(ProjectResolver.displayPath(row.id))\n右键可在访达中打开，或合并到另一个项目"
+        }
 
         var body: some View {
             HStack {
@@ -174,7 +194,7 @@ struct BreakdownTable: View {
                         .monospacedDigit()
                         .frame(width: 20, height: 20)
                         .background(Theme.divider, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                    // 模型名用等宽体（标识符需要逐字符比对）；日期与设备名用正文体
+                    // 模型名用等宽体（标识符需要逐字符比对）；日期、设备名、项目显示名用正文体
                     Text(row.label)
                         .font(.system(size: 12.5, design: mode == .model ? .monospaced : .default))
                         .foregroundStyle(Theme.gray900)
@@ -182,6 +202,9 @@ struct BreakdownTable: View {
                         // 可选中文字会把双击吃掉（变成选词），而模型行双击要开详情，
                         // 所以只在没有详情动作的行上保留选中
                         .textSelectable(onDetail == nil)
+                        // 项目列显示的是消歧后的短名（`a/foo`、`b/foo`），完整路径只有 tooltip 里看得到；
+                        // 「未归类」那行没有路径可给，就如实说明它是什么
+                        .help(labelHelp)
                     if isLocalDevice {
                         Text("本机").font(.system(size: 10))
                             .foregroundStyle(Theme.primary)
@@ -245,6 +268,7 @@ struct BreakdownTable: View {
             .contentShape(Rectangle())
             .onHover { hovering = $0 }
             .onTapGesture(count: 2) { onDetail?() }
+            .projectContextMenu(path: row.id, enabled: mode == .project, onMerge: onMerge)
         }
 
         /// 环境标签：**文字用文本色**，身份由旁边那颗彩色圆点承担。

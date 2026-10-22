@@ -247,12 +247,16 @@ enum RenderHarness {
             // 上一轮末尾那几张把它留在 `.day` 了 —— 不重置的话深色那张 hero 出来是「按日期」，
             // 和浅色那张并排一看就不是同一个界面（这个坑真的踩到过）。
             store.breakdown = .device
+            // 项目归组口径同理：上一轮若试过「会话工作目录」，深色那张的项目数就和浅色对不上。
+            // 演示域里的默认值本来就是 `.gitRoot`，这一句是防工装内部循环把它留在别的值上。
+            store.projectGrouping = .gitRoot
             // TitleStrip 也要出图：它占着顶部 28pt，漏掉的话快照和真窗口差一条
-            // alignment: .top —— 这一张是模拟真窗口（1520×950 上下）：内容比画布略高，
+            // alignment: .top —— 这一张是模拟真窗口（1520 宽）：内容比画布略高，
             // 真窗口也是从顶部开始显示、底部露不全，居中反而会把顶部那条标题带切掉。
+            // 高度 1360：图表 1010 那一版的可见范围 + 项目看板，明细表仍要露出几行。
             capture(VStack(spacing: 0) { TitleStrip(); DashboardBody() }
                         .environmentObject(store).environmentObject(pricing).environment(\.colorScheme, scheme),
-                    size: CGSize(width: WindowFrameKeeper.designSize.width, height: 1010),
+                    size: CGSize(width: WindowFrameKeeper.designSize.width, height: 1360),
                     alignment: .top, pageBackground: scheme, to: "\(dir)/main-\(name).png")
             // ── 设置页走**真窗口**截图，不走 ImageRenderer ──
             // 这里踩过一个坑，记下来：这几张原先是用 `capture(...)`（ImageRenderer）出的，
@@ -301,10 +305,10 @@ enum RenderHarness {
                         size: CGSize(width: 960, height: 640), to: "\(dir)/overlay-short-\(name).png")
             }
 
-            // 三个维度各出一张：明细表的列宽与标签溢出只有在真实行数下才看得出来。
+            // 四个维度各出一张：明细表的列宽与标签溢出只有在真实行数下才看得出来。
             // alignment 同样要 .top —— 「按日期」77 行、整页 4000 多 pt 高，居中之后这一张
             // 正好截在表格中段，表头根本不在图里（量的就是表头跟数据对不对齐，等于白出）。
-            for mode in [BreakdownMode.model, .day] {
+            for mode in [BreakdownMode.model, .project, .day] {
                 store.breakdown = mode
                 capture(VStack(spacing: 0) { TitleStrip(); DashboardBody() }
                             .environmentObject(store).environmentObject(pricing).environment(\.colorScheme, scheme),
@@ -314,11 +318,12 @@ enum RenderHarness {
             }
             // 最小窗口宽度下每个维度各出一张（只出浅色，两种外观的排版完全一样）：
             // 筛选区那一行和「折线卡 + 环形卡」并排都压到极限，是最容易互相挤坏的一档，
-            // 1520 宽下怎么看都是好的。三个维度都出，是因为卡住最小宽度的正是明细表第一列
-            // （模型名 / 设备名 / 日期三种长短不一，见 WindowFrameKeeper.minSize 那段账）。
+            // 1520 宽下怎么看都是好的。四个维度都出，是因为卡住最小宽度的正是明细表第一列
+            // （模型名 / 设备名 / 项目名 / 日期四种长短不一，见 WindowFrameKeeper.minSize 那段账），
+            // 项目看板六块并排也是在这里最容易挤坏。
             // 改 minSize、往表里加列、或者动两张图卡之后，先看这几张。
             if scheme == .light {
-                for mode in [BreakdownMode.model, .device, .day] {
+                for mode in [BreakdownMode.model, .device, .project, .day] {
                     store.breakdown = mode
                     // alignment 必须是 .top：`.frame(height:)` 默认居中，而「按设备」只有两行、
                     // 整页不到 1420 高，居中之后顶部会空出一大条、表头跑到半空中 ——
@@ -362,12 +367,12 @@ enum RenderHarness {
     ///
     /// 离屏环境里量不到真实帧率（没有窗口、没有 vsync），但「滚一帧要重画多少东西」
     /// 是同一个成本：滚动掉帧的优化改完必须有个客观标尺，否则只能靠感觉说「好像顺了」。
-    /// 尺寸固定成整页高度，三种维度都渲染全部内容，横向可比。
+    /// 尺寸固定成整页高度，四个维度都渲染全部内容，横向可比。
     @MainActor
     static func bench(store: UsageStore, pricing: PricingService) {
         guard benchMode else { return }
         NSApp.appearance = NSAppearance(named: .aqua)
-        for mode in [BreakdownMode.device, .model, .day] {
+        for mode in [BreakdownMode.device, .model, .project, .day] {
             store.breakdown = mode
             // 行数读 visibleRows（表格实际画的那份），不是 snapshot.rows —— 基准要量的就是屏幕上那份
             let rows = store.visibleRows.count

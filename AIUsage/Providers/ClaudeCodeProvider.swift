@@ -27,18 +27,23 @@ struct ClaudeCodeProvider: UsageProvider {
     ///
     /// **可见性是 internal 而不是 private**：`--selftest` 要拿合成日志直接调它。
     /// 上面那个 `scan(paths:)` 必经 `ScanCache.shared` —— 那会写用户的
-    /// `~/Library/Application Support/AIUsage/scan_cache_v3.json`，还会顺手删掉同目录下别的
+    /// `~/Library/Application Support/AIUsage/scan_cache_v4.json`，还会顺手删掉同目录下别的
     /// `scan_cache_v*.json`。测试绝不能走那条路。**只放开了可见性，逻辑一行没动。**
     func scanFile(_ file: URL) -> [UsageRecord] {
         var records: [UsageRecord] = []
         /// key → 在 `records` 里的下标，用它就地换掉用量更大的那条
         var best: [String: Int] = [:]
+        /// 文件级兜底：实测带 usage 的行都有 `cwd`，但没带的那些行不能因此变成「未归类」——
+        /// 同一个会话文件必然属于同一个工作目录，前面读到过就沿用。
+        var fileCwd = ""
         let fallbackSession = file.deletingPathExtension().lastPathComponent
         ParseUtil.forEachLine(in: file, containingAny: markers) { obj in
             guard obj["type"] as? String == "assistant",
                   let message = obj["message"] as? [String: Any],
                   let usage = message["usage"] as? [String: Any],
                   let ts = ParseUtil.date(from: obj["timestamp"]) else { return }
+
+            if let cwd = obj["cwd"] as? String, !cwd.isEmpty { fileCwd = cwd }
 
             let messageId = message["id"] as? String
             let requestId = obj["requestId"] as? String
@@ -52,11 +57,18 @@ struct ClaudeCodeProvider: UsageProvider {
                 inputUncached: ParseUtil.int(usage["input_tokens"]),
                 cacheRead: ParseUtil.int(usage["cache_read_input_tokens"]),
                 cacheWrite: ParseUtil.int(usage["cache_creation_input_tokens"]),
-                output: ParseUtil.int(usage["output_tokens"])
+                output: ParseUtil.int(usage["output_tokens"]),
+                projectCwd: fileCwd
             )
             guard record.total > 0 else { return }
             if let i = best[key] {
-                if record.total > records[i].total { records[i] = record }
+                if record.total > records[i].total {
+                    // 替换成用量更大的那条时别把路径弄丢：这一行没带 cwd、而文件里其它行
+                    // 也没带的话，旧记录是这条请求唯一记得路径的地方
+                    records[i] = record.projectCwd.isEmpty && !records[i].projectCwd.isEmpty
+                        ? record.with(projectCwd: records[i].projectCwd, projectGitRoot: "")
+                        : record
+                }
             } else {
                 best[key] = records.count
                 records.append(record)

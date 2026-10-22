@@ -102,6 +102,31 @@ enum DemoData {
 
     // MARK: 生成
 
+    /// 演示里的一个「项目」。`gitRoot` 为空串表示这个目录没有 `.git` ——
+    /// Git 根口径下它会回退到 cwd 本身，正好把这条回退逻辑露在截图上。
+    private struct DemoProject {
+        let cwd: String
+        let gitRoot: String
+    }
+
+    // 路径一律 `/Users/you/...`：这些图要提交进仓库，不能出现作者的真实目录。
+    // 特意铺了两个同一仓库的根与子目录（acme-web / apps/admin）：
+    // Git 根口径下合成一项，会话目录口径下拆成两项 —— 切换设置时看板的变化要看得见。
+    private static let acmeWeb = DemoProject(
+        cwd: "/Users/you/work/acme-web", gitRoot: "/Users/you/work/acme-web")
+    private static let acmeWebAdmin = DemoProject(
+        cwd: "/Users/you/work/acme-web/apps/admin", gitRoot: "/Users/you/work/acme-web")
+    private static let acmeAPI = DemoProject(
+        cwd: "/Users/you/work/acme-api", gitRoot: "/Users/you/work/acme-api")
+    private static let acmeInfra = DemoProject(
+        cwd: "/Users/you/work/acme-infra", gitRoot: "/Users/you/work/acme-infra")
+    private static let orbitDesign = DemoProject(
+        cwd: "/Users/you/work/orbit/packages/design-system", gitRoot: "/Users/you/work/orbit")
+    private static let ossCLI = DemoProject(
+        cwd: "/Users/you/work/oss/cli-kit", gitRoot: "/Users/you/work/oss/cli-kit")
+    private static let notes = DemoProject(
+        cwd: "/Users/you/notes", gitRoot: "")
+
     /// 一个工具在一台设备上的用量形状。
     private struct Profile {
         let provider: ProviderKind
@@ -117,13 +142,16 @@ enum DemoData {
         let cacheRead: ClosedRange<Int>
         let cacheWrite: ClosedRange<Int>
         let output: ClosedRange<Int>
+        /// 这个工具会碰到的项目。按会话下标轮着分，**不消耗 RNG** ——
+        /// 多一次随机调用就会把后面所有数推移，现有截图的数据形状全变。
+        var projects: [DemoProject] = []
         /// 本地数据加密、只能数会话的工具（Windsurf / Antigravity）
         var sessionsOnly = false
 
         init(provider: ProviderKind, models: [String], requests: ClosedRange<Int>,
              requestsPerSession: Int, dayChance: Double, input: ClosedRange<Int>,
              cacheRead: ClosedRange<Int>, cacheWrite: ClosedRange<Int>, output: ClosedRange<Int>,
-             sessionsOnly: Bool = false) {
+             projects: [DemoProject] = [], sessionsOnly: Bool = false) {
             self.provider = provider
             self.models = models
             self.requests = requests
@@ -133,6 +161,7 @@ enum DemoData {
             self.cacheRead = cacheRead
             self.cacheWrite = cacheWrite
             self.output = output
+            self.projects = projects
             self.sessionsOnly = sessionsOnly
         }
     }
@@ -147,32 +176,40 @@ enum DemoData {
         Profile(provider: .claudeCode,
                 models: ["claude-sonnet-4-5", "claude-sonnet-4-5", "claude-sonnet-4-5-20250929", "claude-opus-4-6"],
                 requests: 30...95, requestsPerSession: 45, dayChance: 0.88,
-                input: heavy, cacheRead: heavyCacheRead, cacheWrite: heavyCacheWrite, output: heavyOutput),
+                input: heavy, cacheRead: heavyCacheRead, cacheWrite: heavyCacheWrite, output: heavyOutput,
+                projects: [acmeWeb, acmeWebAdmin, acmeAPI, notes]),
         Profile(provider: .codex,
                 models: ["gpt-5-codex", "gpt-5.1"],
                 requests: 10...48, requestsPerSession: 30, dayChance: 0.62,
-                input: 700...3_600, cacheRead: 16_000...90_000, cacheWrite: 900...6_000, output: 300...1_800),
+                input: 700...3_600, cacheRead: 16_000...90_000, cacheWrite: 900...6_000, output: 300...1_800,
+                projects: [acmeAPI, acmeWeb, ossCLI]),
         Profile(provider: .codexCLI,
                 models: ["gpt-5-codex"],
                 requests: 6...30, requestsPerSession: 22, dayChance: 0.45,
-                input: 500...2_800, cacheRead: 9_000...54_000, cacheWrite: 600...4_000, output: 200...1_400),
+                input: 500...2_800, cacheRead: 9_000...54_000, cacheWrite: 600...4_000, output: 200...1_400,
+                projects: [acmeWebAdmin]),
         Profile(provider: .cursor,
                 models: ["gpt-5", "claude-sonnet-4-5"],
                 requests: 8...40, requestsPerSession: 35, dayChance: 0.5,
-                input: 800...4_000, cacheRead: 12_000...70_000, cacheWrite: 1_000...7_000, output: 300...2_000),
+                input: 800...4_000, cacheRead: 12_000...70_000, cacheWrite: 1_000...7_000, output: 300...2_000,
+                projects: [acmeWeb, orbitDesign]),
         Profile(provider: .devin,
                 models: ["claude-sonnet-4-5-medium"],
                 requests: 3...18, requestsPerSession: 9, dayChance: 0.28,
-                input: 2_000...9_000, cacheRead: 20_000...120_000, cacheWrite: 2_000...14_000, output: 800...4_000),
+                input: 2_000...9_000, cacheRead: 20_000...120_000, cacheWrite: 2_000...14_000, output: 800...4_000,
+                projects: [acmeInfra, acmeAPI]),
         Profile(provider: .qoder,
                 // `auto` 不在价格表里 —— 那一行会以「未计价」出现，金额写成 ≥
                 models: ["auto", "qwen3-coder-plus"],
                 requests: 2...14, requestsPerSession: 10, dayChance: 0.24,
                 input: 600...3_200, cacheRead: 5_000...30_000, cacheWrite: 400...3_000, output: 250...1_600),
+        // ↑ Qoder 不给 projects：真实数据源也没有工作目录，它的 token 正好在项目看板里
+        //   落进「未归类」页脚 —— 这张图要能证明「拿不到路径」是怎么被如实表达的。
         Profile(provider: .codebuddy,
                 models: ["claude-sonnet-4-5", "claude-haiku-4-5"],
                 requests: 4...22, requestsPerSession: 12, dayChance: 0.3,
-                input: 500...3_000, cacheRead: 7_000...40_000, cacheWrite: 500...4_000, output: 200...1_500),
+                input: 500...3_000, cacheRead: 7_000...40_000, cacheWrite: 500...4_000, output: 200...1_500,
+                projects: [acmeWeb, ossCLI, notes]),
         // 这两个本地数据加密，只数会话 —— 主界面上它们 token 为 0、请求数写「—」，
         // 少了它们就看不出这套「拿不到 token 的环境怎么处理」
         Profile(provider: .windsurf,
@@ -190,6 +227,10 @@ enum DemoData {
         var out: [UsageRecord] = []
 
         for profile in profiles {
+            // 项目按会话序号跨天轮转。用「当天第几个会话」取模不够：多数工具一天只有一两个会话，
+            // 项目清单后半截永远轮不到（第一版就是这么漏掉两个项目的）。这个计数器不消耗 RNG，
+            // 所以每条记录的 token 数值与改造前完全一致。
+            var projectIndex = 0
             for offset in 0..<days {
                 guard let date = cal.date(byAdding: .day, value: -offset, to: today) else { continue }
                 let weekday = cal.component(.weekday, from: date)
@@ -215,6 +256,9 @@ enum DemoData {
                 let sessionCount = max(1, Int((Double(n) / Double(profile.requestsPerSession)).rounded()))
                 for s in 0..<sessionCount {
                     let sessionId = "\(profile.provider.rawValue)-\(DayKey.key(date))-\(s)"
+                    // 跨天轮转，**不调 rng**：现有截图里的数字一个都不该因此变化
+                    let project = profile.projects.isEmpty ? nil : profile.projects[projectIndex % profile.projects.count]
+                    if !profile.projects.isEmpty { projectIndex += 1 }
                     for _ in 0..<share(n, session: s, of: sessionCount) {
                         out.append(UsageRecord(provider: profile.provider,
                                                sessionId: sessionId,
@@ -223,7 +267,9 @@ enum DemoData {
                                                inputUncached: rng.int(profile.input),
                                                cacheRead: rng.int(profile.cacheRead),
                                                cacheWrite: rng.int(profile.cacheWrite),
-                                               output: rng.int(profile.output)))
+                                               output: rng.int(profile.output),
+                                               projectCwd: project?.cwd ?? "",
+                                               projectGitRoot: project?.gitRoot ?? ""))
                     }
                 }
             }

@@ -51,6 +51,12 @@ struct ExportContext {
     var selectedProviders: [ProviderKind]
     var deviceLabel: String
     var appVersion: String
+    /// 「按项目」那一列的分组口径。它必须进 meta：同一份数据换个口径导出来，
+    /// 行数和每行的项目都不一样；几个月后回看时只有这个字段能解释差额。
+    var projectGrouping: ProjectGrouping = .gitRoot
+    /// 手动合并的项目（旧路径 → 新路径）。它同样要进 meta：导出里的 `project_path`
+    /// 已经是合并后的目标路径，只有把映射一起写下来，才解释得清两条历史为什么算在了一起。
+    var projectAliases: [ProjectAlias] = []
 }
 
 /// 导出。**纯序列化，不碰文件系统** —— 落盘由调用方（菜单里的 NSSavePanel / `--export`）负责。
@@ -73,8 +79,13 @@ enum UsageExporter {
     /// 机器读的列名一律 ASCII。`date` 与 `label` 在「按日期」维度下内容重复 ——
     /// 仍然保留两列：一个是给机器读的（`DayKey`，钉死 POSIX 区域），一个是给人看的。
     /// 合成一列会让下游得猜这一列到底是哪种。
+    ///
+    /// `project_path` **恒存在**（非项目维度、未归类行留空）：CSV 消费者不该为了判断
+    /// schema 先去看维度列。`label` 是消歧后的显示名（`a/foo`、`b/foo`），
+    /// 只有这一列才是能拼回去的绝对路径 —— 两者不能合成一列。
     static let tableColumns = ["dimension", "date", "label", "providers", "tokens",
-                               "requests", "requests_partial", "cost_usd", "cost_partial", "share"]
+                               "requests", "requests_partial", "cost_usd", "cost_partial", "share",
+                               "project_path"]
 
     /// 金额小数位。6 位是因为单价本身是「每 token 美元」（1e-6 量级），
     /// 再少就会把便宜模型的费用截成 0；界面上的 $X.XX 是给人看的，不是给账本读的。
@@ -107,7 +118,15 @@ enum UsageExporter {
             r.cost.map { number($0, decimals: costDecimals) } ?? "",
             bool(costPartial(r)),
             ctx.share(r).map { number($0, decimals: shareDecimals) } ?? "",
+            projectPath(r, mode: ctx.mode) ?? "",
         ].map { escape($0, separator: separator) }
+    }
+
+    /// 这一行的项目路径。只有「按项目」维度且不是「未归类」时才有值；
+    /// 用 nil 而不是空串给表格与 JSON 各自决定怎么写（CSV 写空、JSON 写 null）。
+    static func projectPath(_ r: BreakdownRow, mode: BreakdownMode) -> String? {
+        guard mode == .project, !r.id.isEmpty else { return nil }
+        return r.id
     }
 
     /// RFC 4180：只在必要时加引号，值里的引号翻倍。
@@ -128,6 +147,10 @@ enum UsageExporter {
             "currency": "USD",
             "dimension": ctx.mode.fileTag,
             "dimension_label": ctx.mode.rawValue,
+            // 项目口径写进元信息：同一份数据换个口径导出来，行数和每行的项目都不一样
+            "project_grouping": ctx.projectGrouping.fileTag,
+            // 手动合并的映射：没有它，导出里「旧路径消失、金额并进新项目」就无从解释
+            "project_aliases": ctx.projectAliases.map { ["from": $0.from, "to": $0.to] },
             "range_start": DayKey.key(ctx.rangeStart),
             "range_end": DayKey.key(ctx.rangeEnd),
             "sort": ctx.sort.key.rawValue,
@@ -163,6 +186,9 @@ enum UsageExporter {
                 // 单价只对「按模型」这一维有意义（其余维度一行跨多个模型）。
                 // 其余维度恒为 null，让下游不用自己判断维度就知道这一格能不能读。
                 "prices": ctx.mode == .model ? prices(r.label, ctx: ctx) : NSNull(),
+                // 非项目维度、以及「未归类」那行恒为 null —— 它们是「没有这个路径」，
+                // 与空字符串（一个真实存在的空路径）不是一回事
+                "project_path": projectPath(r, mode: ctx.mode).map { $0 as Any } ?? NSNull(),
             ]
             // 未计价但金额非 nil 的行（「按日期」「按设备」维度整行给下界）也把单价列成 null
             if ctx.mode == .model && ctx.price(r.label) == nil { item["prices"] = NSNull() }

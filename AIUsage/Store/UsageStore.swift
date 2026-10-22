@@ -97,7 +97,7 @@ struct BreakdownSort {
         }
     }
 
-    /// 切维度后把方向掰回来。「第一列」在三种维度下分别是名称、名称、日期：
+    /// 切维度后把方向掰回来。「第一列」在四种维度下分别是名称、名称、名称、日期：
     /// 名称 A→Z 是对的，日期则要「新的在前」（跟这张表的默认一致），否则一切过去就是倒着的。
     mutating func normalize(for mode: BreakdownMode) {
         if key == .label { ascending = (mode != .day) }
@@ -145,13 +145,14 @@ struct BreakdownSort {
 }
 
 enum BreakdownMode: String, CaseIterable, Identifiable {
-    case device = "按设备", model = "按模型", day = "按日期"
+    case device = "按设备", model = "按模型", project = "按项目", day = "按日期"
     var id: String { rawValue }
     /// 离屏快照文件名用的 ASCII 标签
     var fileTag: String {
         switch self {
         case .device: return "device"
         case .model: return "model"
+        case .project: return "project"
         case .day: return "day"
         }
     }
@@ -311,6 +312,9 @@ struct UsageSnapshot {
     var byModel: [BreakdownRow] = []
     var byDay: [BreakdownRow] = []
     var byDevice: [BreakdownRow] = []
+    /// 项目维度。`id` 是分组键（路径），空串是「未归类」那一行；
+    /// `label` 是 `ProjectResolver.labels` 消歧后的显示名。
+    var byProject: [BreakdownRow] = []
     /// 模型标识 → 完整明细（详情弹窗的数据源）
     var modelDetails: [String: ModelDetail] = [:]
     /// 环境 chip 上的会话数。**不受环境筛选影响** —— 否则选中一个环境后其余环境的计数会消失，
@@ -323,6 +327,7 @@ struct UsageSnapshot {
         switch mode {
         case .device: return byDevice
         case .model: return byModel
+        case .project: return byProject
         case .day: return byDay
         }
     }
@@ -387,15 +392,35 @@ final class UsageStore: ObservableObject {
     @Published var rangeStart: Date = QuickRange.quarter.dates.start { didSet { recompute() } }
     @Published var rangeEnd: Date = QuickRange.quarter.dates.end { didSet { recompute() } }
     /// 明细表的排序。跟 `breakdown` 一样**故意不触发 recompute** —— 排序是读的时候的事，
-    /// 三个维度的行都已算好，排个序而已，没必要把 7 万条记录重算一遍（那正是切维度抖动的主因）。
+    /// 四个维度的行都已算好，排个序而已，没必要把 7 万条记录重算一遍（那正是切维度抖动的主因）。
     /// 行本身在 recompute 里按「费用降序」这个稳定口径排好，保证 snapshot 每次发布内容一致；
     /// 用户点的排序只作用在视图那一层。
     @Published var sort = BreakdownSort()
-    /// 纯展示维度，**故意不触发 recompute**：三个维度的行在同一次 recompute 里都算好了，
+    /// 纯展示维度，**故意不触发 recompute**：四个维度的行在同一次 recompute 里都算好了，
     /// 它只是读的时候用 `snapshot.rows(for:)` 挑一份出来。原先这里挂了 `didSet { recompute() }`，
-    /// 于是每切一次「按设备 / 按模型 / 按日期」都重新发布一个全新的 UsageSnapshot ——
+    /// 于是每切一次维度都重新发布一个全新的 UsageSnapshot ——
     /// KPI 卡、折线图、环形图全部跟着重算，而数据一个都没变，是切维度抖动的主因之一。
     @Published var breakdown: BreakdownMode = .device
+
+    /// 项目归组口径。**这个必须触发 recompute**：它决定聚合行怎么归并，不是读的时候排个序。
+    /// 但**不重扫** —— `AggregateRow` 同时带着 `cwd` 与 `gitRoot`，换口径只是把内存里那份重算一遍。
+    /// 不绑进任何 scene 修饰符：它跟（已删除的）全局指标开关不是一类东西，不该出现在窗口外面。
+    @Published var projectGrouping = ProjectGrouping.stored(in: DemoRuntime.defaults) {
+        didSet {
+            guard projectGrouping != oldValue else { return }
+            ProjectGrouping.store(projectGrouping, in: DemoRuntime.defaults)
+            recompute()
+        }
+    }
+    /// 手动项目合并：「旧路径 → 新路径」的前缀替换。和归组口径一样是**展示端**的选择，
+    /// 改它只重算内存里的聚合，不重扫日志，也不改设备档案。
+    @Published var projectAliases: [ProjectAlias] = ProjectAliases.stored(in: DemoRuntime.defaults) {
+        didSet {
+            guard projectAliases != oldValue else { return }
+            ProjectAliases.store(projectAliases, in: DemoRuntime.defaults)
+            recompute()
+        }
+    }
     @Published var selectedProviders: Set<ProviderKind> = Set(ProviderKind.allCases) { didSet { recompute() } }
     @Published var sourceConfigs: [SourceKind: SourceConfig] { didSet { saveConfigs() } }
 
@@ -466,6 +491,36 @@ final class UsageStore: ObservableObject {
         sort.apply(to: snapshot.rows(for: breakdown))
     }
 
+    /// 所有已聚合数据里出现过的项目键，**不受日期范围与环境筛选影响**。
+    ///
+    /// 合并项目时要能选到「当前范围里已经没有用量」的旧项目：目录改名前那些 session 往往
+    /// 落在很久以前，按当前范围过滤会让人根本找不到它。这里读全量 `rows`。
+    var knownProjectKeys: [String] {
+        let keys = rows.map {
+            ProjectAliases.projectKey(cwd: $0.row.cwd, gitRoot: $0.row.gitRoot,
+                                      grouping: projectGrouping, aliases: projectAliases)
+        }
+        return Array(Set(keys.filter { !$0.isEmpty })).sorted()
+    }
+
+    /// 加一条合并。同一个来源已有映射时替换掉，而不是叠一条 ——
+    /// 两条同源映射谁先生效取决于数组顺序，用户看到的会是随机的那个。
+    func addProjectAlias(from: String, to: String) {
+        let from = ProjectResolver.normalize(from)
+        let to = ProjectResolver.normalize(to)
+        guard !from.isEmpty, !to.isEmpty, from != to else { return }
+        let alias = ProjectAlias(from: from, to: to)
+        if let i = projectAliases.firstIndex(where: { $0.from == from }) {
+            projectAliases[i] = alias
+        } else {
+            projectAliases.append(alias)
+        }
+    }
+
+    func removeProjectAlias(_ alias: ProjectAlias) {
+        projectAliases.removeAll { $0 == alias }
+    }
+
     func resetPaths(for kind: SourceKind) {
         sourceConfigs[kind]?.paths = kind.configuredDefaultPaths
     }
@@ -516,7 +571,9 @@ final class UsageStore: ObservableObject {
                 var out: [UsageRecord] = []
                 for await part in group { out.append(contentsOf: part) }
                 ScanCache.shared.finishScan()
-                return out.sorted { $0.timestamp < $1.timestamp }
+                // Git 根解析要 stat 目录，放在扫描线程里做：主线程只拿成品。
+                // 演示数据自带的 gitRoot 是编好的，enrich 会原样返回（见 ProjectResolver）。
+                return ProjectResolver.enrich(out).sorted { $0.timestamp < $1.timestamp }
             }
         }.value
         records = all
@@ -652,11 +709,24 @@ final class UsageStore: ObservableObject {
         lastSync = localUpdatedAt
     }
 
-    /// 把原始记录压成「日 × 环境 × 模型」的 4 桶聚合 + 每日会话计数。
+    /// 聚合桶的键。**用结构体而不是拼 `|` 字符串**：路径里出现 `|` 是完全合法的
+    /// （Linux 文件名只禁 `/` 和 NUL），拼串会让两条不同记录撞进同一个桶。
+    private struct AggregateKey: Hashable {
+        let day: String
+        let provider: ProviderKind
+        let model: String
+        let cwd: String
+        let gitRoot: String
+    }
+
+    /// 把原始记录压成「日 × 环境 × 模型 × 项目」的 4 桶聚合 + 每日会话计数。
     /// 5 万多条记录通常压成几十行，这也是跨设备同步体量可控的原因。
+    ///
+    /// 项目两列（`cwd` / `gitRoot`）一起进桶键：Git 根模式下同一仓库的根与子目录要合并，
+    /// 会话目录模式下又要拆开 —— 都在展示端按 `ProjectGrouping` 决定，档案里两列都留着。
     nonisolated static func aggregate(_ records: [UsageRecord]) -> (rows: [AggregateRow], sessions: [SessionCountRow]) {
         let cal = Calendar.current
-        var buckets: [String: AggregateRow] = [:]
+        var buckets: [AggregateKey: AggregateRow] = [:]
         var perDay: [String: Set<String>] = [:]
         var providerOfDay: [String: ProviderKind] = [:]
 
@@ -668,9 +738,11 @@ final class UsageStore: ObservableObject {
 
             // 仅会话记录（本地数据加密）只计会话数，不进 token 聚合
             guard r.total > 0 else { continue }
-            let key = "\(day)|\(r.provider.rawValue)|\(r.model)"
+            let key = AggregateKey(day: day, provider: r.provider, model: r.model,
+                                   cwd: r.projectCwd, gitRoot: r.projectGitRoot)
             var b = buckets[key] ?? AggregateRow(day: day, provider: r.provider, model: r.model,
-                                                 inputUncached: 0, cacheRead: 0, cacheWrite: 0, output: 0, requests: 0)
+                                                 inputUncached: 0, cacheRead: 0, cacheWrite: 0, output: 0,
+                                                 requests: 0, cwd: r.projectCwd, gitRoot: r.projectGitRoot)
             b.inputUncached += r.inputUncached
             b.cacheRead += r.cacheRead
             b.cacheWrite += r.cacheWrite
@@ -686,7 +758,11 @@ final class UsageStore: ObservableObject {
             guard let p = providerOfDay[key], let day = key.split(separator: "|").first else { return nil }
             return SessionCountRow(day: String(day), provider: p, count: ids.count)
         }
-        return (buckets.values.sorted { ($0.day, $0.provider.rawValue, $0.model) < ($1.day, $1.provider.rawValue, $1.model) },
+        // 排序键包含两个路径列，保证档案文件的字节内容稳定（否则每次同步都在改文件）
+        return (buckets.values.sorted {
+                    ($0.day, $0.provider.rawValue, $0.model, $0.cwd, $0.gitRoot)
+                        < ($1.day, $1.provider.rawValue, $1.model, $1.cwd, $1.gitRoot)
+                },
                 sessionRows.sorted { ($0.day, $0.provider.rawValue) < ($1.day, $1.provider.rawValue) })
     }
 
@@ -789,6 +865,24 @@ final class UsageStore: ObservableObject {
         /// 四个 token 分量。桶里本来就在逐个累加它们（`snap.totals` 那几行），
         /// 这里只是**顺路**多留一份到行上 —— 表格不画，导出要用（见 `TokenComponents`）。
         var components = TokenComponents()
+
+        /// 天 / 设备 / 项目三个桶共用一份累加逻辑。
+        /// 原先每加一个维度就抄一遍这十几行，抄到第三个时很容易漏掉 `requestsPartial`
+        /// 或某个 token 分量 —— 漏了不会报错，只会让某一维度的数悄悄偏小。
+        /// `devices` 不在里面：按设备维度是单一设备、按项目维度要收设备集合，
+        /// 两者语义不同，交给调用方自己插。
+        mutating func add(_ row: AggregateRow, cost: Double, priced: Bool) {
+            tokens += row.total
+            self.cost += cost
+            requests += row.requests
+            if row.requestsUnknown { requestsPartial = true }
+            if !priced { self.priced = false }
+            components.inputUncached += row.inputUncached
+            components.cacheRead += row.cacheRead
+            components.cacheWrite += row.cacheWrite
+            components.output += row.output
+            providers[row.provider, default: 0] += row.total
+        }
     }
 
     private func recompute() {
@@ -804,6 +898,7 @@ final class UsageStore: ObservableObject {
         var models: [String: ModelDetail] = [:]
         var days: [Date: Bucket] = [:]
         var deviceAgg: [String: Bucket] = [:]
+        var projectAgg: [String: Bucket] = [:]
         var unpriced = Set<String>()
 
         // 仅会话环境（本地数据加密）没有 token 行，靠会话行让它们仍然出现在图例与分布里
@@ -830,12 +925,6 @@ final class UsageStore: ObservableObject {
             // 旧版本 App 写的设备档案缺请求数：这一行（这个模型 / 这一天 / 这台设备）的请求数
             // 只能算成下界，展示时要标 ≥，不能当成「就这么多次」
             let requestsUnknown = r.requestsUnknown
-            // 四个分量在下面三个桶（天 / 设备）+ 模型明细里都要各加一遍，先装成一个值搬
-            var parts = TokenComponents()
-            parts.inputUncached = r.inputUncached
-            parts.cacheRead = r.cacheRead
-            parts.cacheWrite = r.cacheWrite
-            parts.output = r.output
 
             snap.totals.processed += r.total
             snap.totals.cachedInput += r.cacheRead
@@ -872,26 +961,23 @@ final class UsageStore: ObservableObject {
             models[r.model] = m
 
             var dd = days[day] ?? Bucket()
-            dd.tokens += r.total; dd.cost += rowCost; dd.requests += r.requests
-            dd.components.inputUncached += parts.inputUncached
-            dd.components.cacheRead += parts.cacheRead
-            dd.components.cacheWrite += parts.cacheWrite
-            dd.components.output += parts.output
-            dd.providers[r.provider, default: 0] += r.total; dd.devices.insert(scoped.deviceId)
-            if requestsUnknown { dd.requestsPartial = true }
-            if price == nil { dd.priced = false }
+            dd.add(r, cost: rowCost, priced: price != nil)
+            dd.devices.insert(scoped.deviceId)
             days[day] = dd
 
             var da = deviceAgg[scoped.deviceId] ?? Bucket()
-            da.tokens += r.total; da.cost += rowCost; da.requests += r.requests
-            da.components.inputUncached += parts.inputUncached
-            da.components.cacheRead += parts.cacheRead
-            da.components.cacheWrite += parts.cacheWrite
-            da.components.output += parts.output
-            da.providers[r.provider, default: 0] += r.total
-            if requestsUnknown { da.requestsPartial = true }
-            if price == nil { da.priced = false }
+            da.add(r, cost: rowCost, priced: price != nil)
             deviceAgg[scoped.deviceId] = da
+
+            // 归组口径在展示端切换：这里只按当前设置把两列路径折成一个键。
+            // 手动合并先改写路径前缀，再折键 —— 旧目录的 session 就落进新项目那个桶。
+            let projectKey = ProjectAliases.projectKey(cwd: r.cwd, gitRoot: r.gitRoot,
+                                                       grouping: projectGrouping,
+                                                       aliases: projectAliases)
+            var pa = projectAgg[projectKey] ?? Bucket()
+            pa.add(r, cost: rowCost, priced: price != nil)
+            pa.devices.insert(scoped.deviceId)
+            projectAgg[projectKey] = pa
         }
         snap.totals.sessions = summaries.values.reduce(0) { $0 + $1.sessionCount }
         snap.providers = ProviderKind.allCases.compactMap { summaries[$0] }.sorted { $0.tokens > $1.tokens }
@@ -950,6 +1036,20 @@ final class UsageStore: ObservableObject {
                          cost: v.cost, day: nil, requests: v.requests,
                          requestsPartial: v.requestsPartial,
                          deviceIds: [id], unpriced: !v.priced, providerTokens: v.providers,
+                         components: v.components)
+        }.sorted(by: byCostDesc)
+
+        // 项目行和「按设备」一样**永远给金额**（未计价部分作下界）：这个维度问的是
+        // 「哪个项目最烧钱」，整行写「未计价」会让默认视图直接失去意义。
+        // 空键是「未归类」—— 不拿扫描路径或会话 id 去猜一个项目，单独一行如实列出来。
+        let projectLabels = ProjectResolver.labels(for: projectAgg.keys.filter { !$0.isEmpty })
+        snap.byProject = projectAgg.map { key, v in
+            BreakdownRow(id: key,
+                         label: key.isEmpty ? ProjectResolver.unassignedLabel : (projectLabels[key] ?? key),
+                         providers: Set(v.providers.keys), tokens: v.tokens,
+                         cost: v.cost, day: nil, requests: v.requests,
+                         requestsPartial: v.requestsPartial,
+                         deviceIds: v.devices, unpriced: !v.priced, providerTokens: v.providers,
                          components: v.components)
         }.sorted(by: byCostDesc)
 
@@ -1061,6 +1161,13 @@ final class UsageStore: ObservableObject {
         for d in snapshot.byDevice {
             let mark = d.unpriced ? "+" : ""
             lines.append("  \(d.label) tokens=\(d.tokens) requests=\(d.requestsPartial ? "≥" : "")\(d.requests) cost=\(d.cost.map { String(format: "%.2f", $0) } ?? "unpriced")\(mark) providers=\(d.providers.map(\.displayName).sorted().joined(separator: ","))")
+        }
+        // 项目维度：label 是消歧后的显示名，path= 才是原始分组键 ——
+        // 「两个 foo 到底是不是同一个目录」只能靠它核对。空 key 写成 path=（空）。
+        lines.append("projects: \(snapshot.byProject.count) group=\(projectGrouping.fileTag) aliases=\(projectAliases.count)")
+        for p in snapshot.byProject.prefix(5) {
+            let mark = p.unpriced ? "+" : ""
+            lines.append("  \(p.label) path=\(p.id.isEmpty ? "(unassigned)" : p.id) tokens=\(p.tokens) requests=\(p.requestsPartial ? "≥" : "")\(p.requests) cost=\(p.cost.map { String(format: "%.2f", $0) } ?? "unpriced")\(mark)")
         }
         return lines.joined(separator: "\n")
     }

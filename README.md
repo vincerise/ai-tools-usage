@@ -37,7 +37,7 @@ Claude Code 默认保留 30 天本地日志，过了就没了。
 | 功能 | 说明 |
 |---|---|
 | **10 个数据源** | Claude Code、Codex（Desktop / IDE / CLI）、Devin、Cursor、Qoder、CodeBuddy、Windsurf、Antigravity、TRAE |
-| **三种汇总维度** | 按设备 / 按模型 / 按日期，可排序，明细表与图表联动 |
+| **四种汇总维度** | 按设备 / 按模型 / 按项目 / 按日期，可排序，明细表与图表联动；项目另有看板卡，归组可按 Git 仓库根目录或会话工作目录 |
 | **费用估算** | 自动拉 LiteLLM 价格表计价；匹配不到的显示 `Unpriced`，可在设置里手动补价 |
 | **菜单栏常驻** | 图标旁显示今日/本月费用、token、请求数，点开是带近 7 天迷你柱的面板 |
 | **多设备同步** | 通过 iCloud Drive 交换每日汇总档案，不依赖任何服务器 |
@@ -47,11 +47,11 @@ Claude Code 默认保留 30 天本地日志，过了就没了。
 | **留存对照** | 按环境列出「本机日志还剩多少天 / 档案有多少天 / 只在档案里多少天」 |
 | **自动更新** | 设置里检查 GitHub Releases，应用内下载、校验、替换并重启；不引入任何第三方更新框架 |
 
-三个维度各一张，另有深色与几个浮层，都在 [`docs/images/`](docs/images/)：
+四个维度各一张，另有深色与几个浮层，都在 [`docs/images/`](docs/images/)：
 
-| 按模型 | 按日期 | 深色 |
-|---|---|---|
-| [![按模型维度](docs/images/main-model.png)](docs/images/main-model.png) | [![按日期维度](docs/images/main-day.png)](docs/images/main-day.png) | [![深色](docs/images/main-dark.png)](docs/images/main-dark.png) |
+| 按模型 | 按项目 | 按日期 | 深色 |
+|---|---|---|---|
+| [![按模型维度](docs/images/main-model.png)](docs/images/main-model.png) | [![按项目维度](docs/images/main-project.png)](docs/images/main-project.png) | [![按日期维度](docs/images/main-day.png)](docs/images/main-day.png) | [![深色](docs/images/main-dark.png)](docs/images/main-dark.png) |
 
 ## 支持的数据源
 
@@ -69,6 +69,17 @@ Claude Code 默认保留 30 天本地日志，过了就没了。
 | TRAE | `~/Library/Application Support/Trae*/ModularData/ai-agent/database.db` | **SQLCipher 加密**（密钥仅存进程内存），暂无法读取，仅保留数据源占位 |
 
 读不到的环境如实标注「加密」或「未检测到」，**不猜、不按 0 计**。
+
+项目路径取自各数据源自己的会话元数据：Claude Code / CodeBuddy 用 JSONL 里的 `cwd`，Codex 用
+`session_meta.payload.cwd`，Devin 用 `sessions.working_directory`，Cursor 从 workspace 字段尽力而为。
+Qoder 没有工作目录字段，旧版设备档案里也没有记路径 —— 这部分 token 统一归入「未归类」，不猜、不按 0 计。
+默认按 Git 仓库根目录合并（同一仓库的子目录算一个项目），也可以在 设置 → 显示与留存 里改成按会话工作目录
+原样分组；切换只重算内存里的聚合行，不重扫日志。看板卡与明细里的项目行都有右键菜单「在访达中打开项目」——
+路径已被删除、已移动，或来自另一台设备时会弹一句说明；「未归类」也会说明它为什么没有位置，不会点了没反应。
+
+目录改名或搬家之后，旧路径和新路径会分成两个项目：在项目卡或明细行上右键「合并到另一个项目…」，
+选上新项目就能把两段历史算在一起。合并按路径前缀改写分组，不移动、不删除任何文件，也不改动原始日志；
+只在本机生效，可以在 设置 → 显示与留存 → 项目合并 里查看和撤销。
 
 token 口径统一为：
 
@@ -99,16 +110,17 @@ processed = uncached input + cache read + cache write + output
 且连续重复只算一次，Devin 用 `message_id`）—— 明细在「支持的数据源」那张表里。
 
 **跨设备。** 不走 CloudKit（要付费账号，还会破坏 ad-hoc 签名），直接读写 iCloud Drive 里的 JSON 档案。
-档案里只有「日 × 环境 × 模型」的四桶 token 与会话数，**不传费用、不传会话 id**：
+档案里只有按天的四桶 token、会话数，以及每条聚合行的工作目录与 Git 仓库根，**不传费用、不传会话 id**：
 费用对四个桶是线性的，展示端用本机当时那张价格表重算，与逐条计算完全等价 ——
-所以换价之后历史消费跟着重算，而不是留下一堆用旧价算死的数字。
+所以换价之后历史消费跟着重算，而不是留下一堆用旧价算死的数字。两条项目路径也随档案同步，
+切换归组口径只要在本机重新分组，不用重扫日志，远端设备的历史同样能按新口径重排。
 
 **价格。** LiteLLM 公共价格表，匹配先精确后模糊（去掉日期后缀、去掉 `-medium` 这类档位后缀），
 手动补价优先于表里的值，查不到的显示 `Unpriced` 而不是 `$0.00`。
 
 **工程。** 解析结果按 `(path, size, mtime)` 缓存，刷新只重解析变过的文件；
 界面上的每个数都有一个机器可读的出口（`--dump` / `--menu` / `--retention` / `--export`），
-排版有一组离屏快照核对（`--render`），口径有一份 280 条断言的自测（`--selftest`）。
+排版有一组离屏快照核对（`--render`），口径有一份 364 条断言的自测（`--selftest`）。
 
 ## 隐私
 
@@ -127,7 +139,9 @@ processed = uncached input + cache read + cache write + output
 - **App 未开沙盒**（`com.apple.security.app-sandbox = false`）—— 因为要读上面那张表里各家的数据目录。
   这也是它没上架 App Store 的原因。
 - **同步是文件级的。** 多设备同步走你自己的 iCloud Drive 目录，交换的是每日汇总档案
-  （`device-<deviceId>.json`，只含 token 分量与会话数）。档案里**不含**会话 id、不含 prompt 内容、不含费用。
+  （`device-<deviceId>.json`，只含 token 分量、会话数与项目路径）。档案里**不含**会话 id、不含 prompt 内容、不含费用。
+  项目路径是工作目录 / Git 仓库根的绝对路径 —— 不含任何对话内容，但确实会暴露项目目录的名字与位置，
+  这一点先写在这里。
 - 加密读不了的数据源（Windsurf / Antigravity / TRAE），本 App 不做解密、不尝试绕过。
 
 ## 安装
@@ -297,6 +311,10 @@ CSV / TSV / JSON 三种。导出的就是屏幕上那份表：同样的行、同
 - `null` ≠ `0`：量不到的请求数留空（另用 `requests_partial` 表达「这是下界」），未计价的费用留空（`cost_partial=true`），
   分量不全时如实报 `unclassified_tokens`，**绝不猜成 input**。
 - JSON 额外带 `meta`（导出时间、App 版本、维度、日期范围、筛选、排序、**价格表版本**）与每行的 `tokens_components`、单价 `prices`。
+- 项目路径单独成列：`project_path` 是机器可读的原始绝对路径（表格里的 `label` 是消歧后的显示名）。
+  这一列在所有维度下都存在，非「按项目」维度或归入「未归类」时留空，不拿标签冒充路径；
+  `meta.project_grouping` 记下这次用的归组口径（`gitRoot` / `workingDirectory`），
+  `meta.project_aliases` 记下手动合并的「旧路径 → 新路径」映射，过几个月再打开也解释得清。
 - 只写你选的那个路径，不自动往 iCloud 同步目录里写（那是设备档案的地盘）。
 
 ## 命令行核对
@@ -313,7 +331,7 @@ APP="build/Build/Products/Release/AI Usage.app/Contents/MacOS/AI Usage"
 "$APP" --selftest          # 解析 / 聚合 / 跨设备 schema / 导出 / 留存的自测，全过退出码 0
 "$APP" --render /tmp/r     # 主界面、设置页、菜单面板，浅色深色各一张 PNG
 "$APP" --bench             # 整页光栅化几遍，报中位数
-"$APP" --export /tmp/x csv model   # 导出，不点界面（省略格式与维度就出 3×3 共 9 个文件）
+"$APP" --export /tmp/x csv model   # 导出，不点界面（省略格式与维度就出 4×3 共 12 个文件）
 
 "$APP" --render /tmp/r --demo      # 换成编好的演示数据，README 里那几张图就是这么出的
 ```
@@ -323,10 +341,10 @@ APP="build/Build/Products/Release/AI Usage.app/Contents/MacOS/AI Usage"
 | `--dump [天数]` | 打印汇总，默认 90 天。**天数写裸整数**：`--dump 7`。写成 `--dump "7 days"` 不报错但**不生效** —— 解析用的是 `Int($0)`，解析不出来就一声不响地退回 90 天 |
 | `--menu` | 菜单栏摘要（固定窗口：今日 / 本月 / 近 7 天），末尾另打一行 `label:` —— 那是菜单栏上**真正显示的那行字**（由你的配置拼出来）。数字对得上不等于那行字对：「今日 $ $16.86」这种拼写毛病只有把拼好的串打出来才看得见 |
 | `--retention` | 留存对照表。只打印 `cleanupPeriodDays` 这**一个**值，不碰 `~/.claude/settings.json` 里的其它内容 |
-| `--selftest` | 280 条断言，失败退出码非 0 |
+| `--selftest` | 364 条断言，失败退出码非 0 |
 | `--render <目录>` | 离屏快照（`TextEditor` / `Form` / `Menu` 这类 AppKit 承载的视图走真实 `NSWindow` 抓图，见 `RenderHarness.captureWindow`；高度由内容决定的视图自己量，见 `captureFitting`） |
 | `--bench` | 主界面光栅化耗时中位数 |
-| `--export <目录> [csv\|tsv\|json] [device\|model\|day]` | 按维度导出三种格式，逐字节可核对 |
+| `--export <目录> [csv\|tsv\|json] [device\|model\|project\|day]` | 按维度导出三种格式，逐字节可核对 |
 | `--demo` | 演示模式，**加在上面某个参数后面**。数据换成编好的（`AIUsage/Demo/DemoData.swift`，一个固定种子的 xorshift，所以每次跑出来一样），同时关掉一切落盘与联网：配置域换成一次性的 suite、计价不联网、扫描读内存里的合成档案、iCloud 目录指向一条假路径。它不保证「不碰真实配置域」——出图会把窗口真的建起来，**AppKit 自己**会往真实域里写窗口尺寸，退出时按原值还回去（见 `DemoRuntime` 的文件头）。`scripts/shoot.sh` 出图前后各导一次配置域做比对，内容不一致就直接失败 |
 
 `--selftest` 的红线：**绝不碰 `ScanCache.shared`**（它读写并会清理 `~/Library/Application Support/AIUsage/`
@@ -337,7 +355,7 @@ APP="build/Build/Products/Release/AI Usage.app/Contents/MacOS/AI Usage"
 
 ## 缓存
 
-解析结果按文件 (path, size, mtime) 缓存在 `~/Library/Application Support/AIUsage/scan_cache_v3.json`，
+解析结果按文件 (path, size, mtime) 缓存在 `~/Library/Application Support/AIUsage/scan_cache_v4.json`，
 首次全量扫描约十几秒，之后刷新只解析变化过的文件。设置 → 数据源 里有「清除缓存并重扫」。
 
 ## 项目结构
@@ -349,7 +367,7 @@ AIUsage/
 ├── App/                       激活策略、关窗行为、⌘Q、登录时启动
 ├── Demo/                      --demo 的合成数据与演示模式开关
 ├── Providers/                 各数据源的解析器 + 扫描缓存 + SQLite 读取
-├── Store/UsageStore.swift     聚合、筛选、排序的唯一真相
+├── Store/                     聚合、筛选、排序的唯一真相，项目归组口径
 ├── Pricing/                   LiteLLM 价格表、手动补价
 ├── Sync/DeviceSync.swift      iCloud 档案的读写与合并
 ├── Retention/                 留存对照
@@ -357,7 +375,7 @@ AIUsage/
 ├── MenuBar/                   菜单栏配置与面板
 ├── Update/                    检查 GitHub Releases、下载校验、替换 bundle
 ├── Views/                     主界面与组件
-└── Util/                      格式化、主题令牌
+└── Util/                      格式化、主题令牌、项目路径解析
 scripts/
 ├── build.sh                   一键 Release 通用二进制
 ├── shoot.sh                   出 README 用的那几张截图（--render --demo）
@@ -371,6 +389,8 @@ project.yml                    工程配置的唯一事实来源（XcodeGen）
 
 - **界面只有简体中文**，没有做本地化。
 - **Windsurf / Antigravity / TRAE 读不到 token**：本地是加密的，只统计会话数与活跃日期。
+- **项目归组依赖数据源提供的工作目录**：Qoder 没有这个字段，旧版设备档案也没记路径，这部分 token 只能落在「未归类」。
+  同步的是绝对路径，同一仓库在两台机器上检出位置不同时会被当成两个项目 —— 本 App 不读 `.git/config` 的 remote 去猜。
 - **费用是估算**，按 LiteLLM 的公共价格表算，不包含订阅制、额度包、企业折扣。
 - **多设备同步是「各写各的档案」**，没有冲突解决 —— 同一台设备换 id 会导致两份档案并存。
   设计上设备之间会话天然不相交，所以按天相加是对的。

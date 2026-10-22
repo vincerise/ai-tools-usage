@@ -11,7 +11,7 @@ import Foundation
 ///
 /// **两条数据安全红线，改这个文件时不要越过：**
 /// 1. **绝不碰 `ScanCache.shared`。** 它读写用户的
-///    `~/Library/Application Support/AIUsage/scan_cache_v3.json`，而且
+///    `~/Library/Application Support/AIUsage/scan_cache_v4.json`，而且
 ///    `removeSupersededCacheFiles()` 会删掉同目录下别的 `scan_cache_v*.json` ——
 ///    拿 fixture 跑一遍公开的 `scan(paths:)` 就会污染甚至误删用户的真实缓存。
 ///    所以解析器的断言一律直接调 `scanFile(_:)`（为此把两个 provider 的 `scanFile`
@@ -64,6 +64,9 @@ enum SelfTest {
         testClaudeCodeParser()
         testCodexParser()
         testAggregate()
+        testProjectGrouping()
+        testProjectOpener()
+        testProjectAliases()
         testPureFunctions()
         testExport()
         testRetention()
@@ -107,11 +110,16 @@ enum SelfTest {
         equal("缺 requests 当 0", old.rows.first?.requests, 0)
         expect("缺 requests 标记为「只有下界」", old.rows.first?.requestsUnknown == true)
         equal("旧档案会话数读得出来", old.sessions.first?.count, 4)
+        // 项目两列也是后加的：旧设备升级前写的档案没有路径，读成空串 → 归入「未归类」。
+        // 这是如实反映，不是丢数据（token 桶与费用都在）。
+        equal("旧档案缺 project cwd → 空串", old.rows.first?.cwd, "")
+        equal("旧档案缺 project gitRoot → 空串", old.rows.first?.gitRoot, "")
 
         let withRequests = """
         {"schema":1,"deviceId":"new-device","deviceName":"新机器","appVersion":"0.1.0","updatedAt":790000000,
          "rows":[{"day":"2026-05-01","provider":"claudeCode","model":"m",
-                  "inputUncached":10,"cacheRead":0,"cacheWrite":0,"output":5,"requests":7}],
+                  "inputUncached":10,"cacheRead":0,"cacheWrite":0,"output":5,"requests":7,
+                  "cwd":"/Users/you/work/acme","gitRoot":"/Users/you/work/acme"}],
          "sessions":[]}
         """
         guard let new = try? JSONDecoder().decode(DeviceFile.self, from: Data(withRequests.utf8)) else {
@@ -120,6 +128,8 @@ enum SelfTest {
         }
         equal("有 requests 就原样保留", new.rows.first?.requests, 7)
         expect("有 requests 时不标下界", new.rows.first?.requestsUnknown == false)
+        equal("新档案的 cwd 原样保留", new.rows.first?.cwd, "/Users/you/work/acme")
+        equal("新档案的 gitRoot 原样保留", new.rows.first?.gitRoot, "/Users/you/work/acme")
 
         // 「真的是 0 次」和「数不出来」必须分得开：只有 total > 0 且 requests == 0 才算未知
         let zeroTotal = AggregateRow(day: "2026-05-01", provider: .windsurf, model: "m",
@@ -138,7 +148,9 @@ enum SelfTest {
         write([
             // 同一次响应写了三行：前两行是流式占位（usage 全 0），只有最后一行带真实用量。
             // 这是实测踩过的坑 —— 按「先到先得」去重会让整个请求消失（占位行把 key 占了位）。
-            ccLine(uuid: "u1", msgId: "m1", requestId: "r1", input: 0, cacheRead: 0, cacheWrite: 0, output: 0),
+            // 只有第一行带 cwd：后面的行要沿用文件级路径，不能因此变成「未归类」
+            ccLine(uuid: "u1", msgId: "m1", requestId: "r1", input: 0, cacheRead: 0, cacheWrite: 0, output: 0,
+                   cwd: "/Users/you/work/acme"),
             ccLine(uuid: "u2", msgId: "m1", requestId: "r1", input: 0, cacheRead: 0, cacheWrite: 0, output: 0),
             ccLine(uuid: "u3", msgId: "m1", requestId: "r1", input: 100, cacheRead: 40, cacheWrite: 10, output: 7),
             // 同一次响应重复写了两遍，**后来那条更小**：不能被顶掉（要取用量大的那条）
@@ -165,12 +177,18 @@ enum SelfTest {
                recs.allSatisfy { $0.total > 0 })
         equal("环境归属正确", recs.first?.provider, .claudeCode)
         equal("会话 id 取文件内字段", recs.first?.sessionId, "sess-1")
+        // 项目路径：第一行写下的 cwd 是整个会话文件的；后面没带 cwd 的行必须沿用
+        equal("带 cwd 的行把工作目录写进记录", recs.first?.projectCwd, "/Users/you/work/acme")
+        expect("没带 cwd 的行沿用文件级路径，不会变成未归类",
+               recs.count == 2 && recs.allSatisfy { $0.projectCwd == "/Users/you/work/acme" })
     }
 
     private static func ccLine(uuid: String, msgId: String, requestId: String,
-                              input: Int, cacheRead: Int, cacheWrite: Int, output: Int) -> String {
-        """
-        {"type":"assistant","uuid":"\(uuid)","requestId":"\(requestId)","sessionId":"sess-1",
+                              input: Int, cacheRead: Int, cacheWrite: Int, output: Int,
+                              cwd: String? = nil) -> String {
+        let cwdField = cwd.map { ",\"cwd\":\"\($0)\"" } ?? ""
+        return """
+        {"type":"assistant","uuid":"\(uuid)","requestId":"\(requestId)","sessionId":"sess-1"\(cwdField),
          "timestamp":"2026-05-01T10:00:00.000Z",
          "message":{"id":"\(msgId)","model":"claude-sonnet-4-5",
                     "usage":{"input_tokens":\(input),"output_tokens":\(output),
@@ -198,7 +216,8 @@ enum SelfTest {
             // 子代理 / fork 线程：文件开头把父线程历史整批复制过来，时间戳重打成同一秒
             """
             {"type":"session_meta","timestamp":"2026-05-01T10:00:00.000Z",
-             "payload":{"id":"forked-1","forked_from_id":"parent-1","originator":"codex_cli_rs"}}
+             "payload":{"id":"forked-1","forked_from_id":"parent-1","originator":"codex_cli_rs",
+                        "cwd":"/Users/you/work/acme-api"}}
             """,
             // 模型来自最近一条 turn_context，且**它出现之前的 token_count 一律不计** ——
             // 所以这条必须在事件前面，否则整个文件一条记录都算不出来
@@ -231,6 +250,9 @@ enum SelfTest {
         equal("模型取自最近的 turn_context", recs.last?.model, "gpt-5-codex")
         equal("originator 含 cli 时归到 Codex CLI", recs.first?.provider, .codexCLI)
         equal("会话 id 取 session_meta 里的那个", recs.first?.sessionId, "forked-1")
+        equal("session_meta 的 cwd 写进每条记录", recs.first?.projectCwd, "/Users/you/work/acme-api")
+        expect("同一会话的后续事件都带同一个路径",
+               recs.allSatisfy { $0.projectCwd == "/Users/you/work/acme-api" })
     }
 
     // MARK: 3. 聚合
@@ -243,9 +265,11 @@ enum SelfTest {
         let day2 = DayKey.key(Calendar.current.startOfDay(for: d2))
 
         func rec(_ day: Date, _ model: String, _ session: String,
-                 _ i: Int, _ cr: Int, _ cw: Int, _ o: Int) -> UsageRecord {
+                 _ i: Int, _ cr: Int, _ cw: Int, _ o: Int,
+                 cwd: String = "", gitRoot: String = "") -> UsageRecord {
             UsageRecord(provider: .claudeCode, sessionId: session, model: model, timestamp: day,
-                        inputUncached: i, cacheRead: cr, cacheWrite: cw, output: o)
+                        inputUncached: i, cacheRead: cr, cacheWrite: cw, output: o,
+                        projectCwd: cwd, projectGitRoot: gitRoot)
         }
         let records = [
             rec(d1, "model-a", "s1", 10, 0, 0, 5),
@@ -270,6 +294,296 @@ enum SelfTest {
         let again = UsageStore.aggregate(records.reversed())
         equal("输入顺序不影响输出行序", again.rows.map(\.model), out.rows.map(\.model))
         equal("输入顺序不影响输出行数", again.rows.count, out.rows.count)
+
+        // ── 项目进桶键 ──
+        // 同 day/provider/model、不同工作目录必须是两行。少一列的话，两个项目会被
+        // 悄悄加在一起，看板上谁都不多、谁都少不了 —— 而且不会报任何错。
+        let p1 = rec(d1, "model-a", "s1", 10, 0, 0, 5, cwd: "/Users/you/a", gitRoot: "/Users/you/a")
+        let p2 = rec(d1, "model-a", "s2", 10, 0, 0, 5, cwd: "/Users/you/b", gitRoot: "/Users/you/b")
+        let p3 = rec(d1, "model-a", "s3", 10, 0, 0, 5)
+        let byProject = UsageStore.aggregate([p1, p2, p3])
+        equal("同 day/provider/model、不同 cwd 聚成三行（含空路径）", byProject.rows.count, 3)
+        expect("空 cwd 单独成桶，不和有路径的混在一起",
+               byProject.rows.filter { $0.cwd.isEmpty }.count == 1)
+        equal("输入顺序不影响项目行序",
+              UsageStore.aggregate([p3, p2, p1]).rows.map(\.cwd), byProject.rows.map(\.cwd))
+    }
+
+    // MARK: 3b. 项目归组
+
+    /// 项目这一层最容易出的静默错是「两个项目被合成一个」或反过来：
+    /// 界面上数字都挺合理，只是归属错了。这一组把归组的三个环节各自钉住 ——
+    /// 桶键里的路径、口径切换、显示名消歧 —— 再加一条真目录树上的 Git 根探测。
+    private static func testProjectGrouping() {
+        group("3b. 项目归组")
+
+        // ── 记录解码：旧 ScanCache / DevinCache 没有这两个字段 ──
+        let oldRecord = """
+        {"provider":"claudeCode","sessionId":"s","model":"m","timestamp":790000000,
+         "inputUncached":1,"cacheRead":0,"cacheWrite":0,"output":0}
+        """
+        if let r = try? JSONDecoder().decode(UsageRecord.self, from: Data(oldRecord.utf8)) {
+            equal("旧缓存记录缺 projectCwd → 空串", r.projectCwd, "")
+            equal("旧缓存记录缺 projectGitRoot → 空串", r.projectGitRoot, "")
+        } else {
+            expect("旧缓存记录能解码", false, "解码直接失败 —— 升级会让用户整份缓存作废")
+        }
+
+        // 新字段必须能往返：ScanCache 下一次读的就是这次写下去的 JSON
+        let newRecord = UsageRecord(provider: .claudeCode, sessionId: "s", model: "m",
+                                    timestamp: Date(timeIntervalSince1970: 790_000_000),
+                                    inputUncached: 1, cacheRead: 0, cacheWrite: 0, output: 0,
+                                    projectCwd: "/Users/you/a", projectGitRoot: "/Users/you/a")
+        if let data = try? JSONEncoder().encode(newRecord),
+           let back = try? JSONDecoder().decode(UsageRecord.self, from: data) {
+            equal("项目路径往返保留（cwd）", back.projectCwd, "/Users/you/a")
+            equal("项目路径往返保留（gitRoot）", back.projectGitRoot, "/Users/you/a")
+        } else {
+            expect("记录能往返编解码", false)
+        }
+
+        // ── 口径切换 ──
+        equal("键名不许随手改", ProjectGrouping.key, "projects.grouping.v1")
+        equal("Git 根口径优先用仓库根", ProjectGrouping.gitRoot.key(cwd: "/a/sub", gitRoot: "/a"), "/a")
+        equal("没有仓库根时回退到工作目录",
+              ProjectGrouping.gitRoot.key(cwd: "/a/sub", gitRoot: ""), "/a/sub")
+        equal("会话目录口径原样",
+              ProjectGrouping.workingDirectory.key(cwd: "/a/sub", gitRoot: "/a"), "/a/sub")
+        equal("没有路径就是空键", ProjectGrouping.gitRoot.key(cwd: "", gitRoot: ""), "")
+        equal("导出 fileTag 是 ASCII", BreakdownMode.project.fileTag, "project")
+
+        // ── 配置读写：一次性 suite，不碰用户真实配置域 ──
+        let suite = "aiusage.selftest.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suite) else {
+            expect("能开出一次性 suite", false, suite)
+            return
+        }
+        defer {
+            defaults.removePersistentDomain(forName: suite)
+            // `removePersistentDomain` 只清内容，文件壳还留在 ~/Library/Preferences
+            let plist = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Preferences/\(suite).plist")
+            try? FileManager.default.removeItem(at: plist)
+        }
+        equal("没设过 → 默认 Git 根", ProjectGrouping.stored(in: defaults), .gitRoot)
+        ProjectGrouping.store(.workingDirectory, in: defaults)
+        equal("写得进读得出", ProjectGrouping.stored(in: defaults), .workingDirectory)
+        defaults.set("不认得的值", forKey: ProjectGrouping.key)
+        equal("坏值回退到 Git 根，不留在无效档位", ProjectGrouping.stored(in: defaults), .gitRoot)
+
+        // ── 路径规范化 ──
+        equal("normalize: 尾斜杠去掉",
+              ProjectResolver.normalize("/Users/you/work/acme/"), "/Users/you/work/acme")
+        equal("normalize: 折叠 . 与 ..",
+              ProjectResolver.normalize("/Users/you/work/./acme/../acme"), "/Users/you/work/acme")
+        equal("normalize: file:// URI",
+              ProjectResolver.normalize("file:///Users/you/work/acme/"), "/Users/you/work/acme")
+        equal("normalize: 展开 ~",
+              ProjectResolver.normalize("~/work/acme"), NSHomeDirectory() + "/work/acme")
+        equal("normalize: 空串就是空", ProjectResolver.normalize("  "), "")
+        equal("normalize: 相对路径不收", ProjectResolver.normalize("work/acme"), "")
+        equal("normalize: 根目录保留 /", ProjectResolver.normalize("/"), "/")
+
+        // ── Git 根：临时目录树，跑完自删 ──
+        let dir = tempDir("projects")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let fm = FileManager.default
+        let repo = dir.appendingPathComponent("repo", isDirectory: true)
+        let sub = repo.appendingPathComponent("sub", isDirectory: true)
+        let nested = sub.appendingPathComponent("nested", isDirectory: true)
+        let deep = nested.appendingPathComponent("src", isDirectory: true)
+        let plain = dir.appendingPathComponent("plain/dir", isDirectory: true)
+        try? fm.createDirectory(at: deep, withIntermediateDirectories: true)
+        try? fm.createDirectory(at: plain, withIntermediateDirectories: true)
+        try? fm.createDirectory(at: repo.appendingPathComponent(".git"), withIntermediateDirectories: true)
+        try? fm.createDirectory(at: nested.appendingPathComponent(".git"), withIntermediateDirectories: true)
+
+        equal("gitRoot: 子目录找到仓库根",
+              ProjectResolver.gitRoot(for: sub.path), ProjectResolver.normalize(repo.path))
+        equal("gitRoot: 嵌套仓库取最近的那个",
+              ProjectResolver.gitRoot(for: deep.path), ProjectResolver.normalize(nested.path))
+        equal("gitRoot: 没有 .git 的目录返回空", ProjectResolver.gitRoot(for: plain.path), "")
+
+        // worktree / submodule 的 `.git` 是文件而不是目录，也算
+        let worktree = dir.appendingPathComponent("worktree/child", isDirectory: true)
+        try? fm.createDirectory(at: worktree, withIntermediateDirectories: true)
+        try? Data("gitdir: /tmp/elsewhere\n".utf8)
+            .write(to: dir.appendingPathComponent("worktree/.git"))
+        equal("gitRoot: .git 是文件也算",
+              ProjectResolver.gitRoot(for: worktree.path),
+              ProjectResolver.normalize(dir.appendingPathComponent("worktree").path))
+
+        // enrich：一次扫描里补 gitRoot，顺手规范化 cwd
+        let enriched = ProjectResolver.enrich([
+            UsageRecord(provider: .claudeCode, sessionId: "s", model: "m", timestamp: Date(),
+                        inputUncached: 1, cacheRead: 0, cacheWrite: 0, output: 0,
+                        projectCwd: sub.path)
+        ])
+        equal("enrich 补上 Git 根", enriched.first?.projectGitRoot, ProjectResolver.normalize(repo.path))
+        equal("enrich 顺手规范化 cwd", enriched.first?.projectCwd, ProjectResolver.normalize(sub.path))
+
+        // ── 显示名消歧 ──
+        let labels = ProjectResolver.labels(for: ["/Users/you/a/foo", "/Users/you/b/foo", "/Users/you/a/bar"])
+        equal("重名末级目录逐级加父目录", labels["/Users/you/a/foo"], "a/foo")
+        equal("另一个同名目录", labels["/Users/you/b/foo"], "b/foo")
+        equal("不重名的直接用末级", labels["/Users/you/a/bar"], "bar")
+
+        let reserved = ProjectResolver.labels(for: ["/x/未归类", "/y/bar"])
+        equal("真叫「未归类」的目录要消歧，不能和页脚混在一起",
+              reserved["/x/未归类"], "x/未归类")
+        equal("旁边的普通项目照常", reserved["/y/bar"], "bar")
+        equal("workspace 文件去掉扩展名显示",
+              ProjectResolver.labels(for: ["/Users/you/work/acme.code-workspace"])["/Users/you/work/acme.code-workspace"],
+              "acme")
+        equal("空键不参与命名", ProjectResolver.labels(for: ["", "/a/foo"]).count, 1)
+
+        // ── 显示路径 ──
+        equal("displayPath: home 换成 ~",
+              ProjectResolver.displayPath(NSHomeDirectory() + "/work/acme"), "~/work/acme")
+        equal("displayPath: home 本身", ProjectResolver.displayPath(NSHomeDirectory()), "~")
+        equal("displayPath: 其它路径原样", ProjectResolver.displayPath("/opt/work"), "/opt/work")
+        equal("displayPath: 空串原样", ProjectResolver.displayPath(""), "")
+    }
+
+    // MARK: 3c. 在访达中打开项目
+
+    /// 这里只钉「判断」这一层：`open(path:)` 会真的拉起访达，自测不能碰。
+    /// 判断错了的症状是「点了没反应」或者「打开到别的地方」，比崩溃更难发现。
+    private static func testProjectOpener() {
+        group("3c. 在访达中打开项目")
+
+        // 未归类 / 空路径：不是「打不开就算了」，要能说清楚是什么
+        equal("空路径判为未归类", ProjectOpener.resolve(path: ""), .failure(.unassigned))
+        equal("纯空白同样", ProjectOpener.resolve(path: "   "), .failure(.unassigned))
+
+        let dir = tempDir("opener")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let fm = FileManager.default
+        let project = dir.appendingPathComponent("project", isDirectory: true)
+        let file = dir.appendingPathComponent("acme.code-workspace")
+        try? fm.createDirectory(at: project, withIntermediateDirectories: true)
+        try? Data("{}".utf8).write(to: file)
+
+        let projectURL = URL(fileURLWithPath: ProjectResolver.normalize(project.path))
+        equal("存在的目录能解析", ProjectOpener.resolve(path: project.path), .success(projectURL))
+        equal("尾斜杠照常解析", ProjectOpener.resolve(path: project.path + "/"), .success(projectURL))
+        equal("首尾空白照常解析", ProjectOpener.resolve(path: "  \(project.path)  "), .success(projectURL))
+
+        // 文件也算「存在」：Cursor 的 workspace 路径可能是 `.code-workspace`，
+        // 交给访达在所在目录里选中它，不能因为「不是目录」就拒绝
+        if case .success(let url) = ProjectOpener.resolve(path: file.path) {
+            equal("存在的文件也能解析", url.lastPathComponent, "acme.code-workspace")
+        } else {
+            expect("存在的文件也能解析", false)
+        }
+
+        let gone = dir.appendingPathComponent("deleted")
+        equal("找不到的路径如实报 missing",
+              ProjectOpener.resolve(path: gone.path),
+              .failure(.missing(ProjectResolver.normalize(gone.path))))
+
+        // 提示要带上用户认得出的路径（home 显示成 ~），并说清「可能来自另一台设备」
+        let missing = ProjectOpener.message(for: .missing(gone.path))
+        expect("缺失提示带上路径", missing.contains(ProjectResolver.displayPath(gone.path)), missing)
+        expect("缺失提示说明另一种可能", missing.contains("另一台设备"), missing)
+        expect("未归类提示说清原因", ProjectOpener.message(for: .unassigned).contains("没有提供工作目录"))
+    }
+
+    // MARK: 3d. 项目合并（手动别名）
+
+    /// 合并是**路径前缀替换**，不是改数据。这里钉住三件容易错的事：
+    /// 前缀不能跨目录边界命中、链式映射要走到最终目标、环不能把刷新卡死。
+    private static func testProjectAliases() {
+        group("3d. 项目合并")
+
+        equal("键名带版本", ProjectAliases.key, "projects.aliases.v1")
+
+        let merge = [ProjectAlias(from: "/Users/you/work/old", to: "/Users/you/work/new")]
+        equal("精确匹配",
+              ProjectAliases.rewrite("/Users/you/work/old", using: merge),
+              "/Users/you/work/new")
+        equal("子目录按前缀跟着走",
+              ProjectAliases.rewrite("/Users/you/work/old/apps/admin", using: merge),
+              "/Users/you/work/new/apps/admin")
+        equal("前缀必须落在目录边界上",
+              ProjectAliases.rewrite("/Users/you/work/oldish", using: merge),
+              "/Users/you/work/oldish")
+        equal("没有映射时原样返回",
+              ProjectAliases.rewrite("/Users/you/work/old", using: []),
+              "/Users/you/work/old")
+
+        // 最长前缀优先；外层目录后来也搬家时，第二步继续改写 —— 这正是「先并到新目录、
+        // 之后整个父目录又改了一次名」时该有的行为（先命中 /old，再命中 /work）
+        let layered = [
+            ProjectAlias(from: "/Users/you/work", to: "/Users/you/archive"),
+            ProjectAlias(from: "/Users/you/work/old", to: "/Users/you/work/new"),
+        ]
+        equal("最长前缀优先，外层再搬家也继续跟",
+              ProjectAliases.rewrite("/Users/you/work/old/app", using: layered),
+              "/Users/you/archive/new/app")
+
+        // 链式：A→B、B→C 一步到位（用户可能先合到中间名，后来又改了主意）
+        let chain = [
+            ProjectAlias(from: "/a", to: "/b"),
+            ProjectAlias(from: "/b", to: "/c"),
+        ]
+        equal("链式映射走到最终目标", ProjectAliases.rewrite("/a/sub", using: chain), "/c/sub")
+
+        // 环不能死循环。结果停在第一个重复路径上，至少是确定的
+        let cycle = [
+            ProjectAlias(from: "/a", to: "/b"),
+            ProjectAlias(from: "/b", to: "/a"),
+        ]
+        equal("环被 seen 拦住，不会卡死", ProjectAliases.rewrite("/a", using: cycle), "/b")
+
+        // 分组键：两种口径都先改写路径
+        let alias = [ProjectAlias(from: "/Users/you/work/old", to: "/Users/you/work/new")]
+        equal("Git 根口径：旧仓库并到新仓库",
+              ProjectAliases.projectKey(cwd: "/Users/you/work/old/sub", gitRoot: "/Users/you/work/old",
+                                        grouping: .gitRoot, aliases: alias),
+              "/Users/you/work/new")
+        equal("会话目录口径：子目录保留相对结构",
+              ProjectAliases.projectKey(cwd: "/Users/you/work/old/sub", gitRoot: "/Users/you/work/old",
+                                        grouping: .workingDirectory, aliases: alias),
+              "/Users/you/work/new/sub")
+        equal("空路径不会被别名凭空造出来",
+              ProjectAliases.projectKey(cwd: "", gitRoot: "", grouping: .gitRoot, aliases: alias), "")
+
+        // 配置读写：一次性 suite，不碰真实配置域
+        let suite = "aiusage.selftest.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suite) else {
+            expect("能开出一次性 suite", false, suite)
+            return
+        }
+        defer {
+            defaults.removePersistentDomain(forName: suite)
+            // `removePersistentDomain` 只清内容，文件壳还留在 ~/Library/Preferences
+            let plist = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Preferences/\(suite).plist")
+            try? FileManager.default.removeItem(at: plist)
+        }
+        expect("没设过 → 空", ProjectAliases.stored(in: defaults).isEmpty)
+        ProjectAliases.store([ProjectAlias(from: "/a/", to: "/b/")], in: defaults)
+        equal("写得进读得出，顺带规范化",
+              ProjectAliases.stored(in: defaults),
+              [ProjectAlias(from: "/a", to: "/b")])
+        ProjectAliases.store([], in: defaults)
+        expect("空列表把键删掉，不留下一个空数组", defaults.object(forKey: ProjectAliases.key) == nil)
+
+        // 坏值 / 自指 / 同源重复：读的时候清洗掉，分组行为不能随文件内容漂
+        defaults.set(Data("not json".utf8), forKey: ProjectAliases.key)
+        expect("坏 JSON 回退为空", ProjectAliases.stored(in: defaults).isEmpty)
+        let dirty = [
+            ProjectAlias(from: "/a", to: "/a"),
+            ProjectAlias(from: "/x", to: "/y"),
+            ProjectAlias(from: "/x", to: "/z"),
+        ]
+        if let data = try? JSONEncoder().encode(dirty) {
+            defaults.set(data, forKey: ProjectAliases.key)
+        }
+        equal("自指丢弃、同源只留第一条",
+              ProjectAliases.stored(in: defaults),
+              [ProjectAlias(from: "/x", to: "/y")])
     }
 
     // MARK: 4. 纯函数（便宜就一起钉住）
@@ -393,7 +707,7 @@ enum SelfTest {
                    text.contains("\r\n") && !text.replacingOccurrences(of: "\r\n", with: "").contains("\n"))
             expect("\(format.fileTag): 末尾有换行（最后一行的行尾也补全）", text.hasSuffix("\r\n"))
             expect("\(format.fileTag): 表头固定且是 ASCII",
-                   text.contains("dimension\(sep)date\(sep)label\(sep)providers\(sep)tokens\(sep)requests\(sep)requests_partial\(sep)cost_usd\(sep)cost_partial\(sep)share"))
+                   text.contains("dimension\(sep)date\(sep)label\(sep)providers\(sep)tokens\(sep)requests\(sep)requests_partial\(sep)cost_usd\(sep)cost_partial\(sep)share\(sep)project_path"))
             // 「按需加引号」是 RFC 4180 的要求，两种格式的**触发条件不同**：
             // CSV 里这个标签含逗号所以要包引号，TSV 里逗号不是分隔符、原样写才对。
             if format == .csv {
@@ -471,6 +785,56 @@ enum SelfTest {
         expect("JSON: 数不出来的请求数是 null，不是 0", unpriced["requests"] is NSNull)
         expect("JSON: 数不出来的请求数标 partial", unpriced["requests_partial"] as? Bool == true)
         expect("JSON: 未计价行没有占比", unpriced["share"] is NSNull)
+        expect("JSON: 非项目维度下 project_path 是 null，不是空串",
+               priced["project_path"] is NSNull && unpriced["project_path"] is NSNull)
+        equal("JSON: 默认项目口径写进 meta（回看时才能解释行数）",
+              meta["project_grouping"] as? String, "gitRoot")
+
+        // ── 项目维度：原始路径进 project_path，显示名仍是消歧后的 label ──
+        // 路径里故意带逗号：CSV 必须按 RFC 4180 给它加引号，否则下游会多切一列。
+        var projectCtx = ctx
+        projectCtx.mode = .project
+        projectCtx.projectGrouping = .workingDirectory
+        // 手动合并的映射要跟着导出的元信息走：project_path 已经是目标路径，
+        // 不把映射写下来，回看时没法解释两条历史为什么算在了一起
+        projectCtx.projectAliases = [ProjectAlias(from: "/Users/you/work/old",
+                                                  to: "/Users/you/work/acme,web")]
+        projectCtx.rows = [
+            BreakdownRow(id: "/Users/you/work/acme,web", label: "acme,web",
+                         providers: [.claudeCode], tokens: 100, cost: 0.5, day: nil, requests: 2,
+                         components: TokenComponents(inputUncached: 60, cacheRead: 20,
+                                                     cacheWrite: 10, output: 10)),
+            BreakdownRow(id: "", label: "未归类", providers: [.qoder], tokens: 20, cost: 0.1,
+                         day: nil, requests: 1,
+                         components: TokenComponents(inputUncached: 20, cacheRead: 0,
+                                                     cacheWrite: 0, output: 0)),
+        ]
+        let projectCSV = UsageExporter.table(projectCtx, format: .csv)
+        expect("csv: 项目路径进最后一列，含逗号时按 RFC 4180 加引号",
+               projectCSV.contains(",\"/Users/you/work/acme,web\"\r\n"))
+        let unassignedLine = projectCSV.split(separator: "\r\n").first { $0.contains("未归类") }
+        expect("csv: 未归类行的 project_path 留空（行尾就是那个空列）",
+               unassignedLine?.hasSuffix(",") == true)
+
+        if let o = try? JSONSerialization.jsonObject(with: Data(UsageExporter.json(projectCtx).utf8)) as? [String: Any],
+           let m = o["meta"] as? [String: Any],
+           let projectRows = o["rows"] as? [[String: Any]], projectRows.count == 2 {
+            equal("JSON: meta.project_grouping 跟随设置",
+                  m["project_grouping"] as? String, "workingDirectory")
+            let aliases = m["project_aliases"] as? [[String: Any]]
+            equal("JSON: 手动合并的来源写进 meta",
+                  aliases?.first?["from"] as? String, "/Users/you/work/old")
+            equal("JSON: 手动合并的目标写进 meta",
+                  aliases?.first?["to"] as? String, "/Users/you/work/acme,web")
+            equal("JSON: 项目行的 project_path 是原始绝对路径",
+                  projectRows[0]["project_path"] as? String, "/Users/you/work/acme,web")
+            equal("JSON: label 仍是消歧后的显示名",
+                  projectRows[0]["label"] as? String, "acme,web")
+            expect("JSON: 未归类行的 project_path 是 null，不是空串",
+                   projectRows[1]["project_path"] is NSNull)
+        } else {
+            expect("JSON: 项目维度能解析", false, "解析失败或行数不对")
+        }
 
         // 非「按模型」维度：单价那一列恒为 null，下游不用先判断维度
         var dayCtx = ctx

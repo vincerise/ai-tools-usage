@@ -9,7 +9,7 @@ xcodegen generate && ./scripts/build.sh
 ```
 
 它会带着 `--demo` 跑一遍出图工装（`--render <临时目录>`），再把 README 要用的那几张按下面的
-名字拷进这个目录。工装本身会产出二十多张——三种维度、最小窗口宽度、几个浮层、深浅两套——
+名字拷进这个目录。工装本身会产出二十多张——四种维度、最小窗口宽度、几个浮层、深浅两套——
 **只有这个目录里列出来的这几张会进仓库**，其余留在临时目录里。
 
 | 文件 | 拍的是什么 | 工装输出的那一张 |
@@ -17,6 +17,7 @@ xcodegen generate && ./scripts/build.sh
 | `main-light.png` | 主界面，默认的「按设备」维度。跨设备合并、环比、折线、环形、明细表都在这一屏 | `main-light.png` |
 | `main-dark.png` | 同一屏的深色 | `main-dark.png` |
 | `main-model.png` | 「按模型」维度。明细表第一列换成模型名，未计价的模型在这一列里露出来 | `main-light-model.png` |
+| `main-project.png` | 「按项目」维度。第一列是消歧后的项目短名，路径在 tooltip 里；「未归类」单独一行 | `main-light-project.png` |
 | `main-day.png` | 「按日期」维度 | `main-light-day.png` |
 | `settings-sources.png` | 设置 · 数据源：每个工具能不能拿到 token 明细、默认扫哪里 | `settings-sources-light.png` |
 | `settings-display.png` | 设置 · 显示与留存：`cleanupPeriodDays` 现状与建议，下面是对照表 | `settings-display-light.png` |
@@ -58,7 +59,7 @@ grep -rhoE '演示用 [A-Za-z]+( [A-Za-z]+)?' AIUsage/Demo/ | sort -u
 grep -rn "$USER" README.md README.en.md docs/ scripts/
 ```
 
-更直接的一条：把 `docs/images/` 里的图逐张打开看一眼。九张而已，看得完——图上出现一个
+更直接的一条：把 `docs/images/` 里的图逐张打开看一眼。十张而已，看得完——图上出现一个
 你认得的项目路径或者一位真实金额，说明演示数据又漏了一处。
 
 另外**顺手核一眼开关是不是蓝的**：AppKit 控件的强调色只在 App 处于激活态时才画得出来，

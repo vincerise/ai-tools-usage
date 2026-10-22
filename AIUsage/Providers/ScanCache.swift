@@ -6,7 +6,8 @@ import Foundation
 /// **改了 `parse` 的口径就必须换缓存文件名。** 这里判的是「文件没变就沿用旧结果」，
 /// 而文件没变时解析规则变了它并不知道 —— 沿用下去等于新逻辑永远不生效。
 /// 沿革：`v1` → `v2`（加子代理转录）→ `v3`（同一 message.id 取用量最大的那条，
-/// 修子代理转录里「首行 usage 全 0 占位」把整个请求顶掉的问题，见 `ClaudeCodeProvider.scanFile`）。
+/// 修子代理转录里「首行 usage 全 0 占位」把整个请求顶掉的问题，见 `ClaudeCodeProvider.scanFile`）
+/// → `v4`（记录里多了项目工作目录；旧缓存没有这两列，沿用下去「按项目」会全是未归类）。
 final class ScanCache {
     static let shared = ScanCache()
 
@@ -25,7 +26,7 @@ final class ScanCache {
     private static var file: URL {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("AIUsage", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("scan_cache_v3.json")
+        return dir.appendingPathComponent("scan_cache_v4.json")
     }
 
     private func loadIfNeeded() {

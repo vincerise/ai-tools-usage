@@ -34,7 +34,7 @@ This app gathers those scattered logs into one ledger and solves three things:
 | Feature | Description |
 |---|---|
 | **10 data sources** | Claude Code, Codex (Desktop / IDE / CLI), Devin, Cursor, Qoder, CodeBuddy, Windsurf, Antigravity, TRAE |
-| **Three breakdowns** | By device / by model / by day, sortable, with the table and chart linked |
+| **Four breakdowns** | By device / by model / by project / by day, sortable, with the table and chart linked; projects also get a board card, grouped by Git repository root or by session working directory |
 | **Cost estimation** | Pulls the LiteLLM price table automatically; unmatched models show `Unpriced` and can be priced by hand |
 | **Menu bar** | Today's / this month's cost, tokens and requests next to the icon; a panel with a 7-day mini bar chart on click |
 | **Multi-device sync** | Exchanges daily aggregate archives through iCloud Drive — no server involved |
@@ -46,9 +46,9 @@ This app gathers those scattered logs into one ledger and solves three things:
 
 One shot per breakdown, plus a dark one and a few overlays — all in [`docs/images/`](docs/images/):
 
-| By model | By day | Dark |
-|---|---|---|
-| [![By model](docs/images/main-model.png)](docs/images/main-model.png) | [![By day](docs/images/main-day.png)](docs/images/main-day.png) | [![Dark](docs/images/main-dark.png)](docs/images/main-dark.png) |
+| By model | By project | By day | Dark |
+|---|---|---|---|
+| [![By model](docs/images/main-model.png)](docs/images/main-model.png) | [![By project](docs/images/main-project.png)](docs/images/main-project.png) | [![By day](docs/images/main-day.png)](docs/images/main-day.png) | [![Dark](docs/images/main-dark.png)](docs/images/main-dark.png) |
 
 ## Supported data sources
 
@@ -66,6 +66,21 @@ One shot per breakdown, plus a dark one and a few overlays — all in [`docs/ima
 | TRAE | `~/Library/Application Support/Trae*/ModularData/ai-agent/database.db` | **SQLCipher-encrypted** (key lives only in process memory) — not readable yet; a placeholder data source |
 
 Sources that can't be read are labelled "encrypted" or "not detected" — **never guessed, never counted as zero**.
+
+Project paths come from each source's own session metadata: the `cwd` in Claude Code / CodeBuddy JSONL,
+`session_meta.payload.cwd` for Codex, `sessions.working_directory` for Devin, and a best-effort read of
+Cursor's workspace fields. Qoder has no working-directory field, and older device archives recorded no path —
+those tokens all land under "unassigned" (未归类), never guessed and never counted as zero. Grouping is by Git
+repository root by default (subdirectories of one repository count as one project); Settings → Display & Retention
+can switch it to the raw session working directory. Switching only recomputes the in-memory rows — no rescan.
+Board tiles and project rows in the table both have a right-click menu, "Open project in Finder" — when the path
+has been deleted or moved, or belongs to another machine, a short note explains why; "unassigned" explains why it
+has no location at all, instead of doing nothing.
+
+After a directory is renamed or moved, the old and new paths show up as two projects. Right-click the old one and
+choose "Merge into another project…" to count both histories together. The merge rewrites grouping by path prefix;
+it moves or deletes no files and never touches the raw logs. It is local to this machine, and can be reviewed or
+undone under Settings → Display & Retention → Project merges.
 
 Token accounting is unified as:
 
@@ -97,10 +112,12 @@ figure, with each vendor deduplicated by its own key (Claude Code by `message.id
 `token_count` with consecutive duplicates counted once, Devin by `message_id`) — the details are in the table above.
 
 **Across devices.** No CloudKit (it needs a paid account and would break ad-hoc signing); the app reads and
-writes JSON archives directly in iCloud Drive. An archive carries only per-day × per-environment × per-model
-token buckets and session counts — **no cost, no session ids**. Cost is linear in those four buckets, so the
-displaying side recomputes it from whatever price table is current, exactly equivalent to computing per record.
-That's why historical cost follows a price change instead of freezing at an old rate.
+writes JSON archives directly in iCloud Drive. An archive carries only daily four-bucket token counts, session
+counts, and each aggregate row's working directory and Git repository root — **no cost, no session ids**. Cost is
+linear in those four buckets, so the displaying side recomputes it from whatever price table is current, exactly
+equivalent to computing per record. That's why historical cost follows a price change instead of freezing at an
+old rate. Both project paths travel with the archive too, so switching the grouping basis is just a local regroup —
+no rescan, and history from other devices gets regrouped the same way.
 
 **Pricing.** LiteLLM's public price table, matched exactly first and fuzzily after (dropping a trailing date,
 dropping tier suffixes such as `-medium`). A hand-set price wins over the table, and a model with no price shows
@@ -108,7 +125,7 @@ as `Unpriced` rather than `$0.00`.
 
 **Engineering.** Parse results are cached by `(path, size, mtime)` so a refresh re-parses only changed files;
 every number in the UI has a machine-readable outlet (`--dump` / `--menu` / `--retention` / `--export`), the
-layout has a set of offscreen snapshots (`--render`), and the accounting has 280 assertions (`--selftest`).
+layout has a set of offscreen snapshots (`--render`), and the accounting has 364 assertions (`--selftest`).
 
 ## Privacy
 
@@ -124,7 +141,7 @@ This app reads log files that other programs wrote on your machine, so it's wort
   price table, and the update check simply stays quiet.
 - **It never reads credentials.** The retention feature looks at `~/.claude/settings.json`, but reads **only the `cleanupPeriodDays` key**, pulled out with `JSONSerialization`. That file also holds credentials such as `ANTHROPIC_AUTH_TOKEN`; this app does not touch them, print them, log them, or write the file back.
 - **The app is not sandboxed** (`com.apple.security.app-sandbox = false`) — it has to read the per-vendor data directories listed above. That is also why it isn't on the App Store.
-- **Sync is file-level.** Multi-device sync goes through a directory in your own iCloud Drive and exchanges daily aggregate archives (`device-<deviceId>.json`, containing only token buckets and session counts). The archives contain **no** session ids, no prompt content, and no costs.
+- **Sync is file-level.** Multi-device sync goes through a directory in your own iCloud Drive and exchanges daily aggregate archives (`device-<deviceId>.json`, containing only token buckets, session counts and project paths). The archives contain **no** session ids, no prompt content, and no costs. A project path is the absolute working directory / Git repository root — it carries no conversation content, but it does expose the names and locations of your project directories, which is worth saying up front.
 - For the encrypted sources (Windsurf / Antigravity / TRAE), this app does not decrypt anything and does not attempt to bypass the encryption.
 
 ## Installation
@@ -299,6 +316,7 @@ The export button (`square.and.arrow.up`) at the right of the main window's filt
 - Numbers are always raw values and dates use ASCII `yyyy-MM-dd`, **not** the UI formatting (`Formatters.tokens` would produce `12.4M`; human-readable is not machine-readable).
 - `null` ≠ `0`: unmeasurable request counts are left empty (with `requests_partial` saying "this is a lower bound"), unpriced cost is left empty (`cost_partial=true`), and incomplete components are reported honestly as `unclassified_tokens` — **never guessed as input**.
 - JSON additionally carries `meta` (export time, app version, breakdown, date range, filters, sorting, **price table version**) plus per-row `tokens_components` and `prices`.
+- Project paths get their own column: `project_path` is the machine-readable absolute path (the table's `label` is a disambiguated display name). The column exists in every breakdown; it is empty outside the by-project breakdown or for unassigned rows, so a label is never passed off as a path. `meta.project_grouping` records the grouping basis used (`gitRoot` / `workingDirectory`), and `meta.project_aliases` records any manual "old path → new path" merges, so the export still explains itself months later.
 - It writes only to the path you choose and never auto-writes into the iCloud sync directory (that belongs to the device archives).
 
 ## Command-line checks
@@ -314,7 +332,7 @@ APP="build/Build/Products/Release/AI Usage.app/Contents/MacOS/AI Usage"
 "$APP" --selftest          # parsing / aggregation / cross-device schema / export / retention; exit 0 when green
 "$APP" --render /tmp/r     # main window, settings, menu panel — one PNG each for light and dark
 "$APP" --bench             # re-rasterizes the whole page and reports the median
-"$APP" --export /tmp/x csv model   # export without touching the UI (omit format and breakdown for 3×3 = 9 files)
+"$APP" --export /tmp/x csv model   # export without touching the UI (omit format and breakdown for 4×3 = 12 files)
 
 "$APP" --render /tmp/r --demo      # synthetic data — this is how the screenshots above were produced
 ```
@@ -324,10 +342,10 @@ APP="build/Build/Products/Release/AI Usage.app/Contents/MacOS/AI Usage"
 | `--dump [days]` | Prints the summary, 90 days by default. **Pass a bare integer**: `--dump 7`. `--dump "7 days"` doesn't error but **silently does nothing** — it parses with `Int($0)` and falls back to 90 days when that fails |
 | `--menu` | Menu bar summary (fixed windows: today / this month / last 7 days), plus a final `label:` line — the string actually shown in the menu bar, assembled from your configuration. Matching numbers don't mean the string is right: defects like `今日 $ $16.86` are only visible once the assembled string is printed |
 | `--retention` | Retention table. Prints the `cleanupPeriodDays` value **only** and touches nothing else in `~/.claude/settings.json` |
-| `--selftest` | 280 assertions; non-zero exit on failure |
+| `--selftest` | 364 assertions; non-zero exit on failure |
 | `--render <dir>` | Offscreen snapshots (views backed by AppKit — `TextEditor`, `Form`, `Menu` — go through a real `NSWindow`, see `RenderHarness.captureWindow`; views whose height follows their content measure themselves, see `captureFitting`) |
 | `--bench` | Median rasterization time for the main window |
-| `--export <dir> [csv\|tsv\|json] [device\|model\|day]` | Export in three formats per breakdown, byte-for-byte checkable |
+| `--export <dir> [csv\|tsv\|json] [device\|model\|project\|day]` | Export in three formats per breakdown, byte-for-byte checkable |
 | `--demo` | Demo mode, **appended after one of the flags above**. Data becomes synthetic (`AIUsage/Demo/DemoData.swift`, a fixed-seed xorshift, so runs are reproducible) and everything that touches disk or network is shut off: the defaults domain becomes a throwaway suite, pricing goes offline, scanning reads in-memory archives, the iCloud directory points at a fake path. It does **not** promise "never touches the real defaults domain" — rendering builds real windows, and **AppKit itself** writes window frames into the real domain; those are restored to their previous values on exit (see the header of `DemoRuntime`). `scripts/shoot.sh` exports the domain before and after and fails outright if the content differs |
 
 `--selftest`'s red lines: it **never touches `ScanCache.shared`** (which reads, writes and prunes cache files under
@@ -340,7 +358,7 @@ byte-identical before and after a self-test run.
 
 ## Caching
 
-Parse results are cached by file `(path, size, mtime)` in `~/Library/Application Support/AIUsage/scan_cache_v3.json`. The first full scan takes about ten seconds; later refreshes parse only changed files. Settings → Data sources has "Clear cache and rescan".
+Parse results are cached by file `(path, size, mtime)` in `~/Library/Application Support/AIUsage/scan_cache_v4.json`. The first full scan takes about ten seconds; later refreshes parse only changed files. Settings → Data sources has "Clear cache and rescan".
 
 ## Project layout
 
@@ -351,7 +369,7 @@ AIUsage/
 ├── App/                       Activation policy, window lifecycle, ⌘Q, launch at login
 ├── Demo/                      Synthetic data and the demo-mode switch behind --demo
 ├── Providers/                 Per-source parsers, scan cache, SQLite reader
-├── Store/UsageStore.swift     The single source of truth for aggregation, filtering, sorting
+├── Store/                     The single source of truth for aggregation, filtering, sorting and project grouping
 ├── Pricing/                   LiteLLM price table, manual overrides
 ├── Sync/DeviceSync.swift      Reading, writing and merging iCloud archives
 ├── Retention/                 Retention report
@@ -359,7 +377,7 @@ AIUsage/
 ├── MenuBar/                   Menu bar configuration and panel
 ├── Update/                    GitHub Releases check, download verification, bundle swap
 ├── Views/                     Main window and components
-└── Util/                      Formatting, theme tokens
+└── Util/                      Formatting, theme tokens, project path resolution
 scripts/
 ├── build.sh                   One-shot Release universal build
 ├── shoot.sh                   Produce the screenshots the README uses (--render --demo)
@@ -373,6 +391,7 @@ project.yml                    The single source of truth for the project (Xcode
 
 - **The UI is Simplified Chinese only**; no localization has been done.
 - **Windsurf / Antigravity / TRAE expose no tokens**: their local data is encrypted, so only session counts and active days are reported.
+- **Project grouping depends on each source exposing a working directory**: Qoder has no such field, and older device archives recorded no path, so those tokens can only land under "unassigned". Sync carries absolute paths, so the same repository checked out in different locations on two machines shows up as two projects — the app does not read `.git/config` to guess a remote identity.
 - **Costs are estimates**, computed from LiteLLM's public price table. Subscriptions, credit packs and enterprise discounts are not modelled.
 - **Multi-device sync is "each device writes its own archive"** with no conflict resolution — changing a device's id leaves two archives side by side. By design, sessions never overlap across devices, so summing by day is correct.
 - **Tested only on macOS 14+**; a universal binary is produced but Intel has not been verified on real hardware.

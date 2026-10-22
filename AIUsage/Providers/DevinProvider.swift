@@ -44,9 +44,16 @@ struct DevinProvider: UsageProvider {
         }
         sqlite3_busy_timeout(db, 3000)
 
-        // Session-level model fallback.
+        // Session-level model fallback, plus the working directory written by Devin itself
+        // (`sessions.working_directory`; the local schema has it NOT NULL).
         var sessionModel: [String: String] = [:]
-        query(db, "SELECT id, model FROM sessions") { stmt in sessionModel[text(stmt, 0)] = text(stmt, 1) }
+        var sessionCwd: [String: String] = [:]
+        query(db, "SELECT id, model, working_directory FROM sessions") { stmt in
+            let id = text(stmt, 0)
+            sessionModel[id] = text(stmt, 1)
+            let cwd = text(stmt, 2)
+            if !cwd.isEmpty { sessionCwd[id] = cwd }
+        }
 
         // Incremental: the table is append-only (AUTOINCREMENT row_id), so only rows past the cached high-water mark
         // need parsing. A margin of rows is re-read in case metadata was attached slightly after insert.
@@ -54,6 +61,14 @@ struct DevinProvider: UsageProvider {
         let fromRow = max(0, cache.maxRowId - 2000)
         var maxRow = cache.maxRowId
         var byKey = cache.records
+
+        // 上一版缓存里的记录没有项目路径。按 sessionId 从 sessions 补齐而不是整份重扫 ——
+        // 这个库实测有 2GB，为一列去重新解析全部历史不划算；补完照常写回缓存。
+        for (key, record) in byKey where record.projectCwd.isEmpty {
+            if let cwd = sessionCwd[record.sessionId], !cwd.isEmpty {
+                byKey[key] = record.with(projectCwd: cwd, projectGitRoot: "")
+            }
+        }
         query(db, "SELECT session_id, chat_message, created_at, row_id FROM message_nodes WHERE row_id > \(fromRow) AND chat_message LIKE '%\"metrics\"%'") { stmt in
             maxRow = max(maxRow, Int(sqlite3_column_int64(stmt, 3)))
             let sessionId = text(stmt, 0)
@@ -78,7 +93,8 @@ struct DevinProvider: UsageProvider {
                 inputUncached: ParseUtil.int(metrics["input_tokens"]),
                 cacheRead: ParseUtil.int(metrics["cache_read_tokens"]),
                 cacheWrite: ParseUtil.int(metrics["cache_creation_tokens"]),
-                output: ParseUtil.int(metrics["output_tokens"])
+                output: ParseUtil.int(metrics["output_tokens"]),
+                projectCwd: sessionCwd[sessionId] ?? ""
             )
             if record.total > 0 { byKey[key] = record }
         }

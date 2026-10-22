@@ -27,7 +27,10 @@ extension ExportContext {
             rangeEnd: store.rangeEnd,
             selectedProviders: Array(store.selectedProviders),
             deviceLabel: store.deviceSelectionLabel,
-            appVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
+            appVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0",
+            // 项目口径与屏幕上的看板 / 明细表一致；写进导出元信息，回看时才能解释行数
+            projectGrouping: store.projectGrouping,
+            projectAliases: store.projectAliases
         )
     }
 }
@@ -99,9 +102,9 @@ struct ExportMenu: View {
 
 // MARK: - `--export` 工装
 
-/// `--export <目录> [csv|tsv|json] [device|model|day]`：不点界面就产出真实文件，
+/// `--export <目录> [csv|tsv|json] [device|model|project|day]`：不点界面就产出真实文件，
 /// 好让「BOM / CRLF / 转义 / 空值 / 精度」这些只能逐字节核的东西有个可复核的产物。
-/// 参数省略时三种格式 × 三个维度全出（九个文件），一次跑完一张矩阵。
+/// 参数省略时三种格式 × 四个维度全出（十二个文件），一次跑完一张矩阵。
 ///
 /// 与 `--render` / `--bench` 同一挂点、同一份 store/pricing，**不额外联网**。
 enum ExportHarness {

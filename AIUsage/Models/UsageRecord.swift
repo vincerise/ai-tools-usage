@@ -13,12 +13,70 @@ struct UsageRecord: Hashable, Codable {
     let cacheRead: Int
     let cacheWrite: Int
     let output: Int
+    /// 这条记录所属会话的工作目录，由各数据源自己的会话元数据给出。
+    /// **空串是如实表达「这个数据源没给路径」**，聚合与界面上归入「未归类」——
+    /// 不能拿扫描路径、也不能拿会话文件名去猜一个项目出来。
+    let projectCwd: String
+    /// 从 `projectCwd` 逐级向上找到的 Git 仓库根（含 `.git` 的那一级）。
+    /// 没有 `.git` 时为空串，按「Git 仓库根目录」分组时会回退到 `projectCwd`。
+    let projectGitRoot: String
 
     var total: Int { inputUncached + cacheRead + cacheWrite + output }
 
+    /// 两个项目字段放最后并给默认值：现有解析器的调用点一处都不用改，
+    /// 只有真正拿得到工作目录的数据源才显式传。
+    init(provider: ProviderKind, sessionId: String, model: String, timestamp: Date,
+         inputUncached: Int, cacheRead: Int, cacheWrite: Int, output: Int,
+         projectCwd: String = "", projectGitRoot: String = "") {
+        self.provider = provider
+        self.sessionId = sessionId
+        self.model = model
+        self.timestamp = timestamp
+        self.inputUncached = inputUncached
+        self.cacheRead = cacheRead
+        self.cacheWrite = cacheWrite
+        self.output = output
+        self.projectCwd = projectCwd
+        self.projectGitRoot = projectGitRoot
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case provider, sessionId, model, timestamp
+        case inputUncached, cacheRead, cacheWrite, output
+        case projectCwd, projectGitRoot
+    }
+
     func with(model: String) -> UsageRecord {
         UsageRecord(provider: provider, sessionId: sessionId, model: model, timestamp: timestamp,
-                    inputUncached: inputUncached, cacheRead: cacheRead, cacheWrite: cacheWrite, output: output)
+                    inputUncached: inputUncached, cacheRead: cacheRead, cacheWrite: cacheWrite, output: output,
+                    projectCwd: projectCwd, projectGitRoot: projectGitRoot)
+    }
+
+    func with(projectCwd: String, projectGitRoot: String) -> UsageRecord {
+        UsageRecord(provider: provider, sessionId: sessionId, model: model, timestamp: timestamp,
+                    inputUncached: inputUncached, cacheRead: cacheRead, cacheWrite: cacheWrite, output: output,
+                    projectCwd: projectCwd, projectGitRoot: projectGitRoot)
+    }
+}
+
+extension UsageRecord {
+    /// 手写解码只为一件事：**旧缓存文件里没有 `projectCwd` / `projectGitRoot`**。
+    ///
+    /// `ScanCache` 与 `DevinCache` 都是按文件键的整条记录缓存，升级后第一次读到的仍是
+    /// 上一版写下的 JSON。缺字段当空串而不是解析失败：升级不该让用户重扫全部日志
+    /// （Devin 那份库有 2 GB），而空串在界面上就是如实的「未归类」。
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        provider = try c.decode(ProviderKind.self, forKey: .provider)
+        sessionId = try c.decode(String.self, forKey: .sessionId)
+        model = try c.decode(String.self, forKey: .model)
+        timestamp = try c.decode(Date.self, forKey: .timestamp)
+        inputUncached = try c.decode(Int.self, forKey: .inputUncached)
+        cacheRead = try c.decode(Int.self, forKey: .cacheRead)
+        cacheWrite = try c.decode(Int.self, forKey: .cacheWrite)
+        output = try c.decode(Int.self, forKey: .output)
+        projectCwd = try c.decodeIfPresent(String.self, forKey: .projectCwd) ?? ""
+        projectGitRoot = try c.decodeIfPresent(String.self, forKey: .projectGitRoot) ?? ""
     }
 }
 

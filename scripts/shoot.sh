@@ -6,7 +6,7 @@
 # 所以出图不读本机日志、不联网、不写 iCloud，也不会把作者本人的设备名、消费额和
 # `/Users/<名字>/...` 路径截进要提交进仓库的图里（见 AIUsage/Demo/DemoRuntime.swift）。
 #
-# 工装会产出二十多张（三种维度、最小宽度、深色、几个浮层……），这个脚本**只挑 README 要用的
+# 工装会产出二十多张（四种维度、最小宽度、深色、几个浮层……），这个脚本**只挑 README 要用的
 # 那几张**按干净的名字拷进 docs/images/ —— 哪张图进了仓库是一件看得见的事，
 # 而不是从一堆 PNG 里碰运气。
 #
@@ -74,6 +74,7 @@ echo "写入 ${OUT}："
 copy main-light.png             main-light.png
 copy main-dark.png              main-dark.png
 copy main-light-model.png       main-model.png
+copy main-light-project.png     main-project.png
 copy main-light-day.png         main-day.png
 copy settings-sources-light.png settings-sources.png
 copy settings-display-light.png settings-display.png

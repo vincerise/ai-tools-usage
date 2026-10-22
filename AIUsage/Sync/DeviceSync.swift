@@ -29,6 +29,12 @@ struct AggregateRow: Codable, Hashable {
     var output: Int
     /// 这一桶里带用量的记录条数 = 模型响应次数（一条记录 ≈ 一次响应，见 `UsageStore.aggregate`）
     var requests: Int = 0
+    /// 会话的工作目录。空串 = 这个数据源没给路径（Qoder、加密数据源）或档案是旧版本 App 写的。
+    var cwd: String = ""
+    /// 从 `cwd` 解析出的 Git 仓库根。**两列都要同步**：
+    /// 分组方式在展示端可切换（Git 根 / 会话目录），只存其中一列的话，换一下口径就得重扫；
+    /// 远端设备档案同理，本机要能按自己的设置重新分组。
+    var gitRoot: String = ""
 
     var total: Int { inputUncached + cacheRead + cacheWrite + output }
 
@@ -49,6 +55,9 @@ extension AggregateRow {
     /// 也**不动 `currentSchema`**：那个版本号是单向闸门（本机读到更高版本会把整份档案跳过并提示升级），
     /// 为一次向后兼容的加字段去抬它，等于逼所有旧设备升级。
     /// 反过来旧版本 App 读新文件是安全的 —— 合成解码器会忽略不认识的键。
+    ///
+    /// `cwd` / `gitRoot` 同理：旧档案缺这两列时读成空串，那些行进入「未归类」。
+    /// 这是如实反映「那台设备升级前没记路径」，不是丢数据 —— token 桶与费用一分不少。
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         day = try c.decode(String.self, forKey: .day)
@@ -59,6 +68,8 @@ extension AggregateRow {
         cacheWrite = try c.decode(Int.self, forKey: .cacheWrite)
         output = try c.decode(Int.self, forKey: .output)
         requests = try c.decodeIfPresent(Int.self, forKey: .requests) ?? 0
+        cwd = try c.decodeIfPresent(String.self, forKey: .cwd) ?? ""
+        gitRoot = try c.decodeIfPresent(String.self, forKey: .gitRoot) ?? ""
     }
 }
 

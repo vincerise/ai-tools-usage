@@ -28,6 +28,9 @@ struct CodexProvider: UsageProvider {
         var provider: ProviderKind = .codex
         var sessionId: String
         var model = ""
+        /// 会话的工作目录。`session_meta.payload.cwd` 是主来源，
+        /// 实测偶尔只在后续的 `turn_context` 里出现，所以两处都收、后到的可以覆盖。
+        var cwd = ""
         var sawMeta = false
         var lastSignature: String?
         var suppressingForkCopies = false
@@ -35,7 +38,7 @@ struct CodexProvider: UsageProvider {
     }
 
     /// **可见性是 internal 而不是 private**：`--selftest` 要拿合成 rollout 直接调它，
-    /// 绕开 `scan(paths:)` 里那个会读写用户 `scan_cache_v3.json`（并删同目录其他
+    /// 绕开 `scan(paths:)` 里那个会读写用户 `scan_cache_v4.json`（并删同目录其他
     /// `scan_cache_v*.json`）的 `ScanCache.shared`。**只放开了可见性，逻辑一行没动。**
     func scanFile(_ file: URL) -> [UsageRecord] {
         var out: [UsageRecord] = []
@@ -51,11 +54,13 @@ struct CodexProvider: UsageProvider {
                 if let originator = (payload["originator"] as? String)?.lowercased(), originator.contains("cli") || originator == "codex_exec" {
                     st.provider = .codexCLI
                 }
+                if let cwd = payload["cwd"] as? String, !cwd.isEmpty { st.cwd = cwd }
                 if let ts = ParseUtil.date(from: obj["timestamp"]), Self.isForked(payload) {
                     st.suppressingForkCopies = true
                     st.forkAnchor = ts
                 }
             case "turn_context":
+                if let cwd = payload["cwd"] as? String, !cwd.isEmpty { st.cwd = cwd }
                 if let m = payload["model"] as? String { st.model = m }
                 else if let cm = payload["collaboration_mode"] as? [String: Any],
                         let settings = cm["settings"] as? [String: Any],
@@ -87,7 +92,8 @@ struct CodexProvider: UsageProvider {
                     inputUncached: max(0, input - cached - cacheWrite),
                     cacheRead: max(0, cached),
                     cacheWrite: max(0, cacheWrite),
-                    output: max(0, ParseUtil.int(last["output_tokens"]))
+                    output: max(0, ParseUtil.int(last["output_tokens"])),
+                    projectCwd: st.cwd
                 )
                 if record.total > 0 { out.append(record) }
             default: break

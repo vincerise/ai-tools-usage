@@ -2,6 +2,7 @@ import Foundation
 
 /// 本地会话文件加密（Windsurf / Antigravity 的 *.pb 熵值为 8.0，无法解析），只能按文件统计会话数与活跃日期。
 /// 产出 total == 0 的"仅会话"记录：计入会话数，不计 token 与费用。
+/// 这些记录没有 token，本来就不进项目看板；工作目录自然也无从谈起，留空即可。
 struct SessionFilesProvider: UsageProvider {
     let kind: ProviderKind
     let fileExtension: String

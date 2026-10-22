@@ -82,6 +82,9 @@ struct DashboardBody: View {
                 DailyChartView().frame(maxWidth: .infinity)
                 DistributionView().frame(width: 340)
             }
+            // 看板紧贴明细表：点一块项目卡，下方这张表会切成「按项目」并按同一口径排序，
+            // 两块内容在同一视线里，用户不用滚动就能核对。
+            ProjectBoardView()
             BreakdownTable()
         }
         .padding(.horizontal, 24)
