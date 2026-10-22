@@ -328,18 +328,31 @@ struct MenuBarPanel: View {
 /// 近 7 天的迷你柱。**自绘，不用 Swift Charts** —— `DailyChartView` 是给大卡片做的，
 /// 带坐标轴、图例、悬停，塞进 320pt 的面板里只剩噪声。
 ///
+/// 悬停明细**自绘、不用 `.help`**：原生提示要停住一两秒才出来，而且热区只有柱子本身 ——
+/// 没有用量的那天柱高是 0，等于悬停不到。这里整格都是热区，鼠标一进来就出卡片。
+///
 /// 七根柱是**同一个量的七天**，不是七个身份，所以只用一档色相的两个明度：
 /// 今天最重、其余压淡。给每天各配一个颜色是把「序列身份色」用在了没有身份的地方，
 /// 读者会去找这七种颜色各自代表什么。
 private struct WeekBars: View {
     let days: [MenuBarSummary.Day]
 
+    /// 鼠标停在哪一天。**记日期而不是记下标**：汇总窗口每天往前挪一格，下标会悄悄指到后一天。
+    @State private var hoveredDay: Date?
+
     private static let barWidth: CGFloat = 24
     private static let barMaxHeight: CGFloat = 44
+    /// 悬停列的宽度。比柱子宽一圈 —— 它说的是「这一格可以悬停」，不是「这根柱子被选中」。
+    private static let hoverWidth: CGFloat = 32
     /// 柱底那条基线到日期数字的间距
     private static let baselineGap: CGFloat = 5
     /// 日期数字那一行的高度（10pt 字）
     private static let dayLabelHeight: CGFloat = 13
+    /// 图表整块（柱区 + 基线 + 日期行）的高度。提示卡靠它贴到图表上沿，
+    /// 改柱高时提示卡自动跟着走，不用在第二个地方再写一遍数字。
+    private static let chartHeight = barMaxHeight + 1 + baselineGap + dayLabelHeight
+    /// 提示卡宽度。写死是为了左右夹紧好算：最左 / 最右两格必须往内收，不然会顶出面板。
+    private static let tooltipWidth: CGFloat = 150
 
     private var peak: Int { max(1, days.map(\.tokens).max() ?? 0) }
     private var total: Int { days.reduce(0) { $0 + $1.tokens } }
@@ -371,36 +384,112 @@ private struct WeekBars: View {
             }
             .frame(height: PanelMetric.sectionHeaderHeight, alignment: .bottom)
 
-            // 每格等宽、柱子居中：柱子宽度写死 24，靠格子等分撑出等距，
-            // 不写死的话柱子会随 token 数变化的文本宽度左右乱跑。
-            VStack(spacing: 0) {
-                HStack(alignment: .bottom, spacing: 0) {
-                    ForEach(days) { d in
-                        RoundedRectangle(cornerRadius: PanelMetric.Radius.bar, style: .continuous)
-                            .fill(color(d))
-                            .frame(width: Self.barWidth, height: height(d.tokens))
-                            .frame(maxWidth: .infinity)   // 柱子在格子里居中，格子本身撑满等分
-                            .help("\(Formatters.dayLabel(d.day))：\(Formatters.tokens(d.tokens)) tokens · \(Formatters.cost(d.cost))")
+            chart
+        }
+    }
+
+    private var chart: some View {
+        GeometryReader { geo in
+            let cell = geo.size.width / CGFloat(max(days.count, 1))
+            ZStack(alignment: .bottomLeading) {
+                // 每格等宽、柱子居中：格子宽度由面板宽度等分，柱子宽度写死 24。
+                // 不写死的话柱子会随 token 数变化的文本宽度左右乱跑。
+                VStack(spacing: 0) {
+                    HStack(alignment: .bottom, spacing: 0) {
+                        ForEach(days) { d in
+                            column(d)
+                                .frame(width: cell, height: Self.barMaxHeight, alignment: .bottom)
+                        }
                     }
-                }
-                .frame(height: Self.barMaxHeight, alignment: .bottom)
-                // 基线。用 `cardBorder`（8% 黑白）而不是 `Theme.divider`：后者在深色下
-                // 几乎和面板底色同色，等于深色模式里没有这条线。
-                Rectangle()
-                    .fill(Theme.cardBorder)
-                    .frame(height: 1)
-                HStack(spacing: 0) {
-                    ForEach(days) { d in
-                        Text("\(Calendar.current.component(.day, from: d.day))")
-                            .font(.system(size: 10))
-                            .foregroundStyle(Calendar.current.isDateInToday(d.day) ? Theme.primary : Theme.gray500)
-                            .monospacedDigit()
-                            .frame(maxWidth: .infinity)
+                    .frame(height: Self.barMaxHeight, alignment: .bottom)
+                    // 基线。用 `cardBorder`（8% 黑白）而不是 `Theme.divider`：后者在深色下
+                    // 几乎和面板底色同色，等于深色模式里没有这条线。
+                    Rectangle()
+                        .fill(Theme.cardBorder)
+                        .frame(height: 1)
+                    HStack(spacing: 0) {
+                        ForEach(days) { d in
+                            Text("\(Calendar.current.component(.day, from: d.day))")
+                                .font(.system(size: 10))
+                                .foregroundStyle(Calendar.current.isDateInToday(d.day) ? Theme.primary : Theme.gray500)
+                                .monospacedDigit()
+                                .frame(width: cell)
+                        }
                     }
+                    .frame(height: Self.dayLabelHeight)
+                    .padding(.top, Self.baselineGap)
                 }
-                .frame(height: Self.dayLabelHeight)
-                .padding(.top, Self.baselineGap)
+                if let hoveredDay, let i = days.firstIndex(where: { $0.day == hoveredDay }) {
+                    tooltip(days[i])
+                        .offset(x: tooltipX(center: cell * (CGFloat(i) + 0.5), width: geo.size.width),
+                                // 贴着图表上沿浮起，不进柱区 —— 卡片压住柱子的话，
+                                // 正在读数的那根反而被自己挡住了。
+                                y: -(Self.chartHeight + 6))
+                }
+            }
+            .frame(width: geo.size.width, height: Self.chartHeight, alignment: .bottomLeading)
+            // 整格都是热区：柱子之间的空当、日期数字都能唤起提示。
+            // 没有用量的那天柱高为 0，靠这层才悬停得到。
+            .contentShape(Rectangle())
+            .onContinuousHover { phase in
+                switch phase {
+                case .active(let p):
+                    guard !days.isEmpty else { return }
+                    let i = min(max(Int(p.x / cell), 0), days.count - 1)
+                    if hoveredDay != days[i].day { hoveredDay = days[i].day }
+                case .ended:
+                    hoveredDay = nil
+                }
             }
         }
+        .frame(height: Self.chartHeight)
+    }
+
+    /// 一根柱 + 它那一格背后的悬停底色。
+    private func column(_ d: MenuBarSummary.Day) -> some View {
+        ZStack(alignment: .bottom) {
+            RoundedRectangle(cornerRadius: PanelMetric.Radius.button, style: .continuous)
+                .fill(Theme.hover)
+                .frame(width: Self.hoverWidth, height: Self.barMaxHeight)
+                .opacity(hoveredDay == d.day ? 1 : 0)
+                .animation(.easeOut(duration: 0.12), value: hoveredDay)
+            RoundedRectangle(cornerRadius: PanelMetric.Radius.bar, style: .continuous)
+                .fill(color(d))
+                .frame(width: Self.barWidth, height: height(d.tokens))
+        }
+    }
+
+    /// 悬停明细：当天 tokens 与费用。日期用短格式 —— 「近 7 天」里不必再报年份。
+    private func tooltip(_ d: MenuBarSummary.Day) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(Formatters.shortDay(d.day))
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(Theme.gray800)
+            tooltipRow("Tokens", Formatters.tokens(d.tokens))
+            tooltipRow("费用", Formatters.cost(d.cost))
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 7)
+        .frame(width: Self.tooltipWidth, alignment: .leading)
+        .background(Theme.cardBackground, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).stroke(Theme.cardBorder))
+        .shadow(color: .black.opacity(0.10), radius: 8, y: 2)
+        .allowsHitTesting(false)
+    }
+
+    private func tooltipRow(_ label: String, _ value: String) -> some View {
+        HStack(spacing: 8) {
+            Text(label).font(.system(size: 11)).foregroundStyle(Theme.gray600)
+            Spacer(minLength: 8)
+            Text(value)
+                .font(.system(size: 11, weight: .medium, design: .rounded))
+                .foregroundStyle(Theme.gray900)
+                .monospacedDigit()
+        }
+    }
+
+    /// 卡片中心对准当天那格，再夹在面板内 —— 首尾两格不夹就会顶出去。
+    private func tooltipX(center: CGFloat, width: CGFloat) -> CGFloat {
+        min(max(center - Self.tooltipWidth / 2, 0), max(0, width - Self.tooltipWidth))
     }
 }
